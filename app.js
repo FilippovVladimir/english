@@ -12,7 +12,7 @@
 
   // ---------- storage ----------
   const KEY = "talknative.v1";
-  const defaults = () => ({ p: {}, settings: { hideVulgar: false, rate: 0.95, voice: "", newPerSession: 20, twoCols: true }, custom: [], days: {} });
+  const defaults = () => ({ p: {}, g: {}, settings: { hideVulgar: false, rate: 0.95, voice: "", newPerSession: 20, twoCols: true, goal: 20, typeAnswer: false }, custom: [], days: {} });
   let S;
   try { S = Object.assign(defaults(), JSON.parse(localStorage.getItem(KEY) || "{}")); } catch (e) { S = defaults(); }
   S.settings = Object.assign(defaults().settings, S.settings);
@@ -21,7 +21,10 @@
   const peek = (id) => S.p[id] || null;
   // st: 0 new, 1 learning, 2 learned
   const statusOf = (id) => { const p = peek(id); return p ? p.st : 0; };
-  const logReview = () => { const d = today(); S.days[d] = (S.days[d] || 0) + 1; };
+  const logReview = () => {
+    const d = today(); S.days[d] = (S.days[d] || 0) + 1;
+    if (S.days[d] === S.settings.goal) setTimeout(() => toast("🎯 Дневная цель выполнена! " + S.settings.goal + " повторений"), 300);
+  };
 
   // ---------- data ----------
   const CATS = window.CATEGORIES;
@@ -41,7 +44,18 @@
   const SECS = window.WORD_SECTIONS;
   const WD = window.WORDS.map(([n, en, ipa, ru, sec]) => ({ id: "w:" + n, kind: "w", n, en, ipa, ru, sec }));
   const wdIndex = Object.fromEntries(WD.map((w) => [w.id, w]));
-  const itemById = (id) => phIndex[id] || wdIndex[id];
+  // Неправильные глаголы: группа по совпадению форм (AAA cut-cut-cut, ABB buy-bought-bought, ABA come-came-come, ABC go-went-gone)
+  const first = (s) => s.split(" / ")[0];
+  const VB = window.VERBS.map(([base, past, pp, ru, top, exEn, exRu]) => {
+    const b = first(base).replace(/\s*\(.*\)/, ""), p2 = first(past), p3 = first(pp);
+    const grp = b === p2 && p2 === p3 ? "AAA" : p2 === p3 ? "ABB" : b === p3 ? "ABA" : "ABC";
+    return { id: "v:" + b, kind: "v", en: base, base: b, past, pp, ru, top: !!top, grp, forms: base + " – " + past + " – " + pp, ex: exEn ? [[exEn, exRu]] : [] };
+  });
+  const vbIndex = Object.fromEntries(VB.map((v) => [v.id, v]));
+  const itemById = (id) => phIndex[id] || wdIndex[id] || vbIndex[id];
+  // как показывать/озвучивать английскую сторону карточки
+  const enOf = (x) => (x.kind === "v" ? x.forms : x.en);
+  const sayOf = (x) => (x.kind === "v" ? [x.base, first(x.past), first(x.pp)].join(", ") : x.en);
 
   const visiblePH = () => S.settings.hideVulgar ? PH.filter((p) => p.r !== "v") : PH;
 
@@ -191,8 +205,26 @@
     return list;
   }
 
+  // Фраза дня: одна и та же весь день, из частых фраз; кнопка 🎲 — случайная
+  let dailyId = null;
+  function dailyPhrase() {
+    const pool = visiblePH().filter((p) => p.f >= 4 && p.cat !== "custom");
+    if (dailyId && phIndex[dailyId]) return phIndex[dailyId];
+    let h = 0; for (const ch of today()) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+    return pool[h % pool.length];
+  }
+  function renderDaily() {
+    const box = $("#ph-daily");
+    const showIt = !ui.q && !ui.cat && !ui.type && !ui.reg && !ui.freq && !ui.status;
+    box.hidden = !showIt;
+    if (!showIt) return;
+    const p = dailyPhrase(); if (!p) { box.hidden = true; return; }
+    box.innerHTML = '<div class="daily-head"><span>✨ ' + (dailyId ? "Случайная фраза" : "Фраза дня") + '</span><button class="btn small-btn" id="daily-rnd">🎲 Другая</button></div>' + phraseCard(p, true);
+  }
+
   function renderPhrases() {
     renderCats();
+    renderDaily();
     const list = filteredPhrases();
     $("#ph-count").textContent = plural(list.length, "фраза", "фразы", "фраз");
     $("#ph-list").classList.toggle("two", S.settings.twoCols);
@@ -207,9 +239,9 @@
   }
 
   function refreshCard(id) {
-    const el = $('#ph-list article[data-id="' + CSS.escape(id) + '"]');
-    const p = phIndex[id];
-    if (el && p) el.outerHTML = phraseCard(p, ui.open.has(id));
+    const p = phIndex[id]; if (!p) return;
+    $$('#view-phrases article[data-id="' + CSS.escape(id) + '"]').forEach((el) =>
+      (el.outerHTML = phraseCard(p, el.closest("#ph-daily") ? true : ui.open.has(id))));
   }
 
   function bindPhrases() {
@@ -230,6 +262,14 @@
     $("#ph-freq").addEventListener("change", (e) => { ui.freq = +e.target.value; ui.limit = PAGE; renderPhrases(); });
     $("#ph-more").addEventListener("click", () => { ui.limit += PAGE; renderPhrases(); });
     $("#ph-list").addEventListener("click", onItemClick);
+    $("#ph-daily").addEventListener("click", (e) => {
+      if (e.target.closest("#daily-rnd")) {
+        const pool = visiblePH().filter((p) => p.f >= 3);
+        dailyId = pool[Math.floor(Math.random() * pool.length)].id; renderDaily(); return;
+      }
+      if (e.target.closest("[data-toggle]")) return; // карточка дня всегда раскрыта
+      onItemClick(e);
+    });
   }
 
   function onItemClick(e) {
@@ -308,11 +348,13 @@
     CATS.forEach((c) => { if (visiblePH().some((p) => p.cat === c.id)) h += '<option value="ph:' + c.id + '">' + c.icon + " " + esc(c.name) + "</option>"; });
     h += '</optgroup><optgroup label="Словарь (1000 слов)"><option value="w:all">Все слова</option>';
     Object.keys(SECS).forEach((k) => { if (!(S.settings.hideVulgar && k === "intimate")) h += '<option value="w:' + k + '">' + esc(SECS[k]) + "</option>"; });
+    h += '</optgroup><optgroup label="Неправильные глаголы"><option value="v:top">Самые нужные (' + VB.filter((v) => v.top).length + ')</option><option value="v:all">Все (' + VB.length + ")</option>";
     return h + "</optgroup>";
   }
   function deckItems(src) {
     const [kind, k] = src.split(":");
-    if (k === "fav") return PH.concat(WD).filter((x) => (peek(x.id) || {}).fav);
+    if (k === "fav") return PH.concat(WD, VB).filter((x) => (peek(x.id) || {}).fav);
+    if (kind === "v") return k === "top" ? VB.filter((v) => v.top) : VB;
     if (kind === "ph") {
       const v = visiblePH();
       if (k === "all") return v;
@@ -338,14 +380,14 @@
   function renderLearnSetup() {
     fc.running = false;
     const items = deckItems(fc.src), st = deckStats(items);
-    $("#view-learn").innerHTML =
-      "<h1>🃏 Карточки</h1>" +
+    $("#view-learn").innerHTML = modeSwitch("learn") +
       '<div class="card setup">' +
       '<label>Что учим<select id="fc-src">' + deckOptions() + "</select></label>" +
       '<label>Направление<div class="seg" id="fc-dir">' +
       '<button data-d="ru-en" class="' + (fc.dir === "ru-en" ? "on" : "") + '">RU → EN</button>' +
       '<button data-d="en-ru" class="' + (fc.dir === "en-ru" ? "on" : "") + '">EN → RU</button>' +
       '<button data-d="mix" class="' + (fc.dir === "mix" ? "on" : "") + '">Вперемешку</button></div></label>' +
+      '<label class="inline-sw"><span>✍️ Вводить ответ с клавиатуры<small>Для карточек RU → EN: пишешь перевод сам, сайт проверяет</small></span><span class="switch"><input type="checkbox" id="fc-type"' + (S.settings.typeAnswer ? " checked" : "") + "><span></span></span></label>" +
       '<div class="stat-line muted"><div><b>' + st.due + "</b>на повторение</div><div><b>" + st.fresh + "</b>новых</div><div><b>" + st.learned + "</b>выучено</div><div><b>" + st.total + "</b>всего</div></div>" +
       '<div class="row"><button class="btn primary big" id="fc-start">Начать (' + Math.min(st.due + Math.min(st.fresh, S.settings.newPerSession), st.total) + ")</button>" +
       '<button class="btn" id="fc-cram">Все подряд</button></div>' +
@@ -354,8 +396,16 @@
     $("#fc-src").value = fc.src;
     $("#fc-src").addEventListener("change", (e) => { fc.src = e.target.value; persistFc(); renderLearnSetup(); });
     $("#fc-dir").addEventListener("click", (e) => { const b = e.target.closest("[data-d]"); if (!b) return; fc.dir = b.dataset.d; persistFc(); renderLearnSetup(); });
+    $("#fc-type").addEventListener("change", (e) => { S.settings.typeAnswer = e.target.checked; save(); });
     $("#fc-start").addEventListener("click", () => startSession(false));
     $("#fc-cram").addEventListener("click", () => startSession(true));
+  }
+  function goalBar() {
+    const n = S.days[today()] || 0, g = S.settings.goal, pct = Math.min(100, Math.round((n / g) * 100));
+    return '<div class="goal"><span>🎯 Цель дня</span><div class="progress"><i style="width:' + pct + '%"></i></div><b>' + n + " / " + g + (n >= g ? " ✓" : "") + "</b></div>";
+  }
+  function modeSwitch(cur) {
+    return '<div class="mode-sw"><div class="seg"><button data-go="learn" class="' + (cur === "learn" ? "on" : "") + '">🃏 Карточки</button><button data-go="quiz" class="' + (cur === "quiz" ? "on" : "") + '">🎯 Квиз</button></div></div>' + goalBar();
   }
   function persistFc() { try { localStorage.setItem(KEY + ".fc", JSON.stringify({ src: fc.src, dir: fc.dir })); } catch (e) { /* ignore */ } }
 
@@ -367,7 +417,7 @@
       const due = items.filter((x) => { const p = peek(x.id); return p && p.seen && p.due <= now; }).sort((a, b) => peek(a.id).due - peek(b.id).due);
       const fresh = items.filter((x) => { const p = peek(x.id); return !p || !p.seen; });
       // новые — сначала самые частые
-      fresh.sort((a, b) => (b.f || 3) - (a.f || 3) || Math.random() - 0.5);
+      fresh.sort((a, b) => (b.f || (b.top ? 5 : 3)) - (a.f || (a.top ? 5 : 3)) || Math.random() - 0.5);
       q = due.concat(fresh.slice(0, S.settings.newPerSession));
       q = shuffle(q.slice(0, 200));
     }
@@ -387,9 +437,12 @@
     }
     const c = fc.queue[fc.i], x = itemById(c.id);
     if (!x) { fc.i++; return renderCard(); }
-    const front = c.dir === "ru-en" ? x.ru : x.en;
-    const back = c.dir === "ru-en" ? x.en : x.ru;
+    const front = c.dir === "ru-en" ? x.ru : enOf(x);
+    const back = c.dir === "ru-en" ? enOf(x) : x.ru;
+    const typing = S.settings.typeAnswer && c.dir === "ru-en";
     let extra = "";
+    if (fc.flipped && fc.typed) extra = '<div class="typed ' + (fc.typed.ok ? "ok" : "bad") + '">' + (fc.typed.ok ? (fc.typed.close ? "✅ Почти верно (опечатка): " : "✅ Верно: ") : "❌ Ты написал: ") + esc(fc.typed.val || "—") + "</div>";
+    if (x.kind === "v") (x.ex || []).forEach((e) => { extra += '<div class="ex"><button class="icon-btn" data-say="' + esc(e[0]) + '">🔊</button><div><div class="ex-en">' + esc(e[0]) + '</div><div class="ex-ru">' + esc(e[1]) + "</div></div></div>"; });
     if (x.kind === "w" && x.ipa) extra += '<div class="hint">' + esc(x.ipa) + "</div>";
     if (x.kind === "p") {
       if (x.n) extra += '<p class="note" style="margin-top:12px">' + esc(x.n) + "</p>";
@@ -401,22 +454,58 @@
       '<div class="fc-top"><button class="icon-btn" id="fc-exit" title="Выйти">✕</button><div class="progress"><i style="width:' + pct + '%"></i></div><span class="small muted">' + fc.done + "/" + fc.total + "</span></div>" +
       '<div class="card fc" id="fc-card">' +
       '<div class="q">' + esc(front) + "</div>" +
-      (c.dir === "en-ru" ? '<div class="row" style="margin-top:8px"><button class="icon-btn" data-say="' + esc(x.en) + '">🔊</button></div>' : "") +
-      (x.kind === "p" ? '<div class="hint">' + CAT[x.cat].icon + " " + esc(CAT[x.cat].name) + (x.t === "m" ? " · запомнить целиком" : "") + "</div>" : '<div class="hint">' + esc(SECS[x.sec]) + "</div>") +
+      (c.dir === "en-ru" ? '<div class="row" style="margin-top:8px"><button class="icon-btn" data-say="' + esc(sayOf(x)) + '">🔊</button></div>' : "") +
+      '<div class="hint">' + (x.kind === "p" ? CAT[x.cat].icon + " " + esc(CAT[x.cat].name) + (x.t === "m" ? " · запомнить целиком" : "") : x.kind === "v" ? "🔤 Неправильный глагол" + (c.dir === "ru-en" ? " · назови 3 формы" : "") : esc(SECS[x.sec])) + "</div>" +
       (fc.flipped
-        ? '<div class="a"><div class="ans">' + esc(back) + '</div>' + (c.dir === "ru-en" ? '<div class="row" style="justify-content:center;margin-top:6px"><button class="icon-btn" data-say="' + esc(x.en) + '">🔊</button></div>' : "") + extra + "</div>"
+        ? '<div class="a"><div class="ans">' + esc(back) + '</div>' + (c.dir === "ru-en" ? '<div class="row" style="justify-content:center;margin-top:6px"><button class="icon-btn" data-say="' + esc(sayOf(x)) + '">🔊</button></div>' : "") + extra + "</div>"
+        : typing ? '<form class="type-box" id="fc-form"><input class="input" id="fc-input" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="' + (x.kind === "v" ? "например: went gone" : "Напиши по-английски…") + '"></form>'
         : '<div class="tap">Нажми, чтобы увидеть ответ</div>') +
       "</div>" +
       (fc.flipped
         ? '<div class="grades"><button class="btn again" data-g="0">Не знаю<small>сейчас</small></button><button class="btn hard" data-g="1">Сложно<small>завтра</small></button><button class="btn good" data-g="2">Знаю<small>' + INTERVALS[Math.min(box + 1, 7)] + " дн.</small></button></div>"
+        : typing ? '<div class="grades" style="grid-template-columns:2fr 1fr"><button class="btn primary big" id="fc-check">Проверить</button><button class="btn" id="fc-flip">Не знаю</button></div>'
         : '<div class="grades" style="grid-template-columns:1fr"><button class="btn primary big" id="fc-flip">Показать ответ</button></div>') +
       '<div class="kbd">Пробел — перевернуть · 1 / 2 / 3 — оценка · S — озвучить</div>' +
       "</div>";
-    if (fc.flipped && c.dir === "ru-en") speak(x.en);
-    if (!fc.flipped && c.dir === "en-ru") speak(x.en);
+    if (fc.flipped && c.dir === "ru-en") speak(sayOf(x));
+    if (!fc.flipped && c.dir === "en-ru") speak(sayOf(x));
+    if (typing && !fc.flipped) {
+      const inp = $("#fc-input");
+      $("#fc-form").addEventListener("submit", (e) => { e.preventDefault(); checkTyped(); });
+      if (matchMedia("(hover: hover)").matches) inp.focus();
+    }
   }
 
-  function flip() { if (!fc.flipped) { fc.flipped = true; renderCard(); } }
+  // ---------- проверка введённого ответа ----------
+  const clean = (s) => norm(s).replace(/[’`]/g, "'").replace(/\(.*?\)|[.,!?…"«»:;–—-]/g, " ").replace(/\s+/g, " ").trim();
+  function lev(a, b) {
+    const d = Array.from({ length: a.length + 1 }, (_, i) => [i]);
+    for (let j = 1; j <= b.length; j++) d[0][j] = j;
+    for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++)
+      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    return d[a.length][b.length];
+  }
+  function judge(x, val) {
+    const v = clean(val);
+    if (!v) return { ok: false };
+    if (x.kind === "v") {
+      const toks = v.split(" ");
+      const has = (forms) => forms.split(" / ").some((f) => toks.includes(clean(f)));
+      return { ok: has(x.past) && has(x.pp) };
+    }
+    const answers = x.en.split(" / ").concat(x.alt || []).map(clean).filter(Boolean);
+    if (answers.includes(v)) return { ok: true };
+    const close = answers.some((a) => a.length > 4 && lev(a, v) <= (a.length > 10 ? 2 : 1));
+    return { ok: close, close };
+  }
+  function checkTyped() {
+    const c = fc.queue[fc.i], x = itemById(c.id), val = $("#fc-input").value;
+    fc.typed = Object.assign({ val }, judge(x, val));
+    fc.flipped = true; renderCard();
+    const g = $('[data-g="' + (fc.typed.ok ? 2 : 0) + '"]'); if (g) g.classList.add("suggest");
+  }
+
+  function flip() { if (!fc.flipped) { fc.flipped = true; fc.typed = null; renderCard(); } }
   function grade(g) {
     const c = fc.queue[fc.i], p = prog(c.id), now = Date.now();
     if (!p.seen) p.seen = now;
@@ -425,22 +514,25 @@
     else { p.box = Math.min(p.box + 1, 7); p.due = now + INTERVALS[p.box] * DAY; }
     p.st = p.box >= 5 ? 2 : 1;
     logReview(); save();
-    fc.done++; fc.i++; fc.flipped = false; renderCard();
+    fc.done++; fc.i++; fc.flipped = false; fc.typed = null; renderCard();
   }
 
   function bindLearn() {
     $("#view-learn").addEventListener("click", (e) => {
+      const go = e.target.closest("[data-go]"); if (go) { show(go.dataset.go); return; }
       if (!fc.running) return;
       const say = e.target.closest("[data-say]"); if (say) { e.stopPropagation(); speak(say.dataset.say); return; }
       if (e.target.closest("#fc-exit")) { renderLearnSetup(); return; }
       const g = e.target.closest("[data-g]"); if (g) { grade(+g.dataset.g); return; }
+      if (e.target.closest("#fc-check")) { checkTyped(); return; }
+      if (e.target.closest("#fc-form")) return;
       if (e.target.closest("#fc-flip") || e.target.closest("#fc-card")) flip();
     });
   }
 
   // ---------- QUIZ ----------
   const qz = { src: "ph:all", mode: "ctx", items: [], i: 0, score: 0, answered: false, running: false };
-  const MODES = { ctx: "Ситуация: вставь фразу", ruen: "Перевод RU → EN", enru: "Перевод EN → RU" };
+  const MODES = { ctx: "Ситуация", listen: "🎧 На слух", ruen: "RU → EN", enru: "EN → RU" };
 
   function blankable(p) {
     if (p.kind !== "p" || !p.ex || !p.ex.length) return null;
@@ -468,11 +560,11 @@
 
   function renderQuizSetup() {
     qz.running = false;
-    $("#view-quiz").innerHTML = "<h1>🎯 Квиз</h1>" +
+    $("#view-quiz").innerHTML = modeSwitch("quiz") +
       '<div class="card setup">' +
       '<label>Тема<select id="qz-src">' + deckOptions() + "</select></label>" +
       '<label>Режим<div class="seg" id="qz-mode">' + Object.keys(MODES).map((k) => '<button data-m="' + k + '" class="' + (qz.mode === k ? "on" : "") + '">' + MODES[k] + "</button>").join("") + "</div></label>" +
-      '<p class="small muted" style="margin:0">«Ситуация» — показывается пример из фильма/диалога с пропуском, нужно выбрать подходящую фразу. Лучше всего тренирует понимание контекста.</p>' +
+      '<p class="small muted" style="margin:0">«Ситуация» — пример из диалога с пропуском, выбери подходящую фразу. «На слух» — фраза звучит голосом, текста не видно, выбери перевод: тренирует понимание речи в фильмах.</p>' +
       '<div class="row"><button class="btn primary big" id="qz-start">Начать (10 вопросов)</button></div></div>';
     $("#qz-src").value = qz.src;
     $("#qz-src").addEventListener("change", (e) => (qz.src = e.target.value));
@@ -503,7 +595,7 @@
       return;
     }
     const x = qz.items[qz.i];
-    const keyOf = (y) => (qz.mode === "enru" ? y.ru : y.en);
+    const keyOf = (y) => (qz.mode === "enru" || qz.mode === "listen" ? y.ru : enOf(y));
     // дистракторы: из той же категории/раздела, затем из общей колоды
     const same = qz.pool.filter((y) => y.id !== x.id && (y.cat || y.sec) === (x.cat || x.sec));
     const other = qz.pool.filter((y) => y.id !== x.id);
@@ -518,15 +610,21 @@
     let prompt, text, sub = "";
     if (qz.mode === "ctx") { const b = blankable(x); prompt = "Какая фраза пропущена?"; text = b.text; sub = b.ru; }
     else if (qz.mode === "ruen") { prompt = "Как сказать по-английски?"; text = x.ru; }
-    else { prompt = "Что это значит?"; text = x.en; }
+    else if (qz.mode === "listen") { prompt = "Что прозвучало? Выбери перевод"; text = ""; }
+    else { prompt = "Что это значит?"; text = enOf(x); }
     const pct = Math.round((qz.i / qz.items.length) * 100);
     v.innerHTML = '<div class="fc-wrap">' +
       '<div class="fc-top"><button class="icon-btn" id="qz-exit" title="Выйти">✕</button><div class="progress"><i style="width:' + pct + '%"></i></div><span class="small muted">' + (qz.i + 1) + "/" + qz.items.length + "</span></div>" +
-      '<div class="card qz-q"><div class="prompt">' + prompt + '</div><div class="text">' + esc(text) + "</div>" + (sub ? '<div class="sub">' + esc(sub) + "</div>" : "") +
-      (qz.mode === "enru" ? '<div class="row" style="justify-content:center;margin-top:8px"><button class="icon-btn" data-say="' + esc(x.en) + '">🔊</button></div>' : "") + "</div>" +
+      '<div class="card qz-q"><div class="prompt">' + prompt + "</div>" +
+      (qz.mode === "listen"
+        ? '<button class="listen-btn" data-say="' + esc(sayOf(x)) + '">🔊</button><div class="row" style="justify-content:center;gap:6px"><button class="btn small-btn" data-slow="1">🐢 Медленно</button></div>'
+        : '<div class="text">' + esc(text) + "</div>") +
+      (sub ? '<div class="sub">' + esc(sub) + "</div>" : "") +
+      (qz.mode === "enru" ? '<div class="row" style="justify-content:center;margin-top:8px"><button class="icon-btn" data-say="' + esc(sayOf(x)) + '">🔊</button></div>' : "") + "</div>" +
       '<div class="opts">' + qz.opts.map((o, i) => '<button class="opt" data-o="' + i + '">' + esc(keyOf(o)) + "</button>").join("") + "</div>" +
       '<div id="qz-after"></div></div>';
     qz.answered = false;
+    if (qz.mode === "listen") speak(sayOf(x));
   }
 
   function answer(i) {
@@ -540,23 +638,227 @@
     if (!ok) { p.box = 0; p.due = Date.now(); if (p.st === 2) p.st = 1; }
     if (!p.st) p.st = 1;
     logReview(); save();
-    speak(x.en);
-    let expl = '<b>' + esc(x.en) + "</b> — " + esc(x.ru);
+    if (qz.mode !== "listen") speak(sayOf(x));
+    let expl = '<b>' + esc(enOf(x)) + "</b> — " + esc(x.ru);
     if (x.n) expl += '<div class="muted" style="margin-top:4px">' + esc(x.n) + "</div>";
     $("#qz-after").innerHTML = '<div class="card qz-expl">' + (ok ? "✅ Верно! " : "❌ Неверно. ") + expl + '</div><div class="row" style="justify-content:center;margin-top:12px"><button class="btn primary big" id="qz-next">Дальше →</button></div>';
   }
 
   function bindQuiz() {
     $("#view-quiz").addEventListener("click", (e) => {
+      const go = e.target.closest("[data-go]"); if (go) { show(go.dataset.go); return; }
       if (!qz.running) return;
       const say = e.target.closest("[data-say]"); if (say) { speak(say.dataset.say); return; }
+      if (e.target.closest("[data-slow]")) { const r = S.settings.rate; S.settings.rate = 0.6; speak(sayOf(qz.items[qz.i])); S.settings.rate = r; return; }
       if (e.target.closest("#qz-exit")) { renderQuizSetup(); return; }
       const o = e.target.closest("[data-o]"); if (o) { answer(+o.dataset.o); return; }
       if (e.target.closest("#qz-next")) { qz.i++; renderQuestion(); }
     });
   }
 
+  // ---------- НЕПРАВИЛЬНЫЕ ГЛАГОЛЫ ----------
+  const GRP = {
+    AAA: { name: "Все формы одинаковые", ex: "cut – cut – cut" },
+    ABB: { name: "2-я и 3-я совпадают", ex: "buy – bought – bought" },
+    ABA: { name: "1-я и 3-я совпадают", ex: "come – came – come" },
+    ABC: { name: "Все формы разные", ex: "go – went – gone" }
+  };
+  const vui = { q: "", f: "top", hide: false, open: new Set(), shown: new Set(), trainer: null };
+  function verbList() {
+    const q = norm(vui.q.trim());
+    return VB.filter((v) =>
+      (vui.f === "all" || (vui.f === "top" && v.top) || (vui.f === "learned" && statusOf(v.id) === 2) || (vui.f === "new" && statusOf(v.id) !== 2) || vui.f === v.grp) &&
+      (!q || norm(v.forms + " " + v.ru).includes(q)));
+  }
+  function renderVerbs() {
+    const v = $("#view-verbs");
+    if (vui.trainer) return renderTrainer();
+    const learned = VB.filter((x) => statusOf(x.id) === 2).length;
+    const opts = [["top", "⭐ Самые нужные"], ["all", "Все глаголы"], ["new", "Не выученные"], ["learned", "Выученные"]]
+      .concat(Object.keys(GRP).map((k) => [k, GRP[k].name + " (" + GRP[k].ex + ")"]));
+    v.innerHTML =
+      '<input class="search" id="vb-search" type="search" placeholder="Поиск: go, went, идти…" autocomplete="off" value="' + esc(vui.q) + '">' +
+      '<div class="toolbar"><select id="vb-filter" class="filt-select">' + opts.map(([k, n]) => '<option value="' + k + '"' + (vui.f === k ? " selected" : "") + ">" + esc(n) + "</option>").join("") + "</select>" +
+      '<button class="btn filt-btn' + (vui.hide ? " on" : "") + '" id="vb-hide">' + (vui.hide ? "👁 Показать" : "🙈 Скрыть формы") + "</button></div>" +
+      '<div class="row" style="margin-bottom:10px"><button class="btn primary" id="vb-train">✍️ Тренажёр</button><button class="btn" id="vb-cards">🃏 Карточки</button><span class="spacer"></span><span class="small muted">Выучено ' + learned + " из " + VB.length + "</span></div>" +
+      (vui.hide ? '<div class="tip small" style="margin-bottom:10px">🙈 Режим самопроверки: вспомни 2-ю и 3-ю формы, затем нажми на строку, чтобы проверить.</div>' : "") +
+      '<div class="count-line" id="vb-count"></div>' +
+      '<div class="card vb-table"><div class="vb-row vb-head"><span>V1 · инфинитив</span><span>V2 · Past</span><span>V3 · Participle</span><span>Перевод</span><span></span></div><div id="vb-list"></div></div>';
+    renderVerbRows();
+    let t;
+    $("#vb-search").addEventListener("input", (e) => { clearTimeout(t); t = setTimeout(() => { vui.q = e.target.value; renderVerbRows(); }, 150); });
+    $("#vb-filter").addEventListener("change", (e) => { vui.f = e.target.value; renderVerbRows(); });
+    $("#vb-hide").addEventListener("click", () => { vui.hide = !vui.hide; vui.shown.clear(); renderVerbs(); });
+    $("#vb-train").addEventListener("click", startTrainer);
+    $("#vb-cards").addEventListener("click", () => { fc.src = vui.f === "top" ? "v:top" : "v:all"; persistFc(); show("learn"); });
+  }
+  function renderVerbRows() {
+    const list = verbList();
+    $("#vb-count").textContent = plural(list.length, "глагол", "глагола", "глаголов");
+    $("#vb-list").innerHTML =
+      (list.length ? list.map((x) => {
+        const st = statusOf(x.id), hidden = vui.hide && !vui.shown.has(x.id), open = vui.open.has(x.id);
+        const f = (s) => (hidden ? '<span class="vb-mask">•••</span>' : esc(s));
+        return '<div class="vb-row' + (st === 2 ? " learned" : "") + (open ? " open" : "") + '" data-id="' + esc(x.id) + '">' +
+          '<span class="vb-1">' + esc(x.en) + "</span><span>" + f(x.past) + "</span><span>" + f(x.pp) + '</span><span class="vb-ru">' + esc(x.ru) + "</span>" +
+          '<span class="vb-act"><button class="icon-btn" data-say="' + esc(sayOf(x)) + '" title="Озвучить">🔊</button><button class="icon-btn" data-vl="1" title="Знаю">' + (st === 2 ? "✅" : "⬜") + "</button></span>" +
+          (open && x.ex.length ? '<div class="vb-ex"><button class="icon-btn" data-say="' + esc(x.ex[0][0]) + '">🔊</button><div><div class="ex-en">' + esc(x.ex[0][0]) + '</div><div class="ex-ru">' + esc(x.ex[0][1]) + '</div><div class="small muted">' + GRP[x.grp].name + "</div></div></div>" : "") +
+          "</div>";
+      }).join("") : '<div class="empty">Ничего не найдено</div>');
+  }
+  function bindVerbs() {
+    $("#view-verbs").addEventListener("click", (e) => {
+      if (vui.trainer) return onTrainerClick(e);
+      const say = e.target.closest("[data-say]"); if (say) { speak(say.dataset.say); return; }
+      const row = e.target.closest(".vb-row[data-id]"); if (!row) return;
+      const id = row.dataset.id;
+      if (e.target.closest("[data-vl]")) {
+        const p = prog(id); p.st = p.st === 2 ? 0 : 2;
+        if (p.st === 2) { p.box = Math.max(p.box, 5); p.due = Date.now() + 30 * DAY; p.seen = p.seen || Date.now(); } else { p.box = 0; p.due = 0; p.seen = 0; }
+        save(); renderVerbRows(); return;
+      }
+      if (vui.hide && !vui.shown.has(id)) { vui.shown.add(id); speak(sayOf(vbIndex[id])); }
+      else if (vui.open.has(id)) vui.open.delete(id); else vui.open.add(id);
+      renderVerbRows();
+    });
+  }
+
+  // Тренажёр: показываем V1 и перевод, нужно вписать V2 и V3
+  function startTrainer() {
+    let pool = verbList(); if (pool.length < 5) pool = VB.filter((v) => v.top);
+    pool = shuffle(pool).sort((a, b) => statusOf(a.id) - statusOf(b.id));
+    vui.trainer = { items: shuffle(pool.slice(0, 10)), i: 0, score: 0, res: null, wrong: [] };
+    renderVerbs();
+  }
+  function renderTrainer() {
+    const T = vui.trainer, v = $("#view-verbs");
+    if (T.i >= T.items.length) {
+      v.innerHTML = '<div class="fc-wrap"><div class="card fc"><div class="q">' + T.score + " / " + T.items.length + '</div><div class="hint">' + (T.score === T.items.length ? "Идеально! 🔥" : T.score >= 7 ? "Хорошо 👍" : "Повтори и попробуй ещё 💪") + "</div>" +
+        (T.wrong.length ? '<div class="a" style="text-align:left"><div class="small muted" style="margin-bottom:6px">Повтори:</div>' + T.wrong.map((x) => "<div><b>" + esc(x.forms) + "</b> — " + esc(x.ru) + "</div>").join("") + "</div>" : "") +
+        '</div><div class="row" style="justify-content:center;margin-top:12px"><button class="btn primary" data-t="again">Ещё 10</button><button class="btn" data-t="exit">К списку</button></div></div>';
+      return;
+    }
+    const x = T.items[T.i], r = T.res;
+    const field = (name, val, okv) => '<label class="tr-field"><span>' + name + '</span><input class="input' + (r ? (okv ? " ok" : " bad") : "") + '" id="tr-' + name + '" autocomplete="off" autocapitalize="off" spellcheck="false" value="' + esc(val || "") + '"' + (r ? " disabled" : "") + "></label>";
+    v.innerHTML = '<div class="fc-wrap">' +
+      '<div class="fc-top"><button class="icon-btn" data-t="exit" title="Выйти">✕</button><div class="progress"><i style="width:' + (T.i / T.items.length) * 100 + '%"></i></div><span class="small muted">' + (T.i + 1) + "/" + T.items.length + "</span></div>" +
+      '<div class="card fc" style="min-height:0"><div class="q">' + esc(x.en) + '</div><div class="hint">' + esc(x.ru) + "</div>" +
+      '<form id="tr-form" class="tr-grid">' + field("Past", r && r.p, r && r.pOk) + field("Participle", r && r.pp, r && r.ppOk) + "</form>" +
+      (r ? '<div class="a"><div class="ans">' + esc(x.forms) + '</div><div class="row" style="justify-content:center"><button class="icon-btn" data-say="' + esc(sayOf(x)) + '">🔊</button></div>' +
+        (x.ex.length ? '<div class="ex" style="justify-content:center"><div><div class="ex-en">' + esc(x.ex[0][0]) + '</div><div class="ex-ru">' + esc(x.ex[0][1]) + "</div></div></div>" : "") + "</div>" : "") +
+      "</div>" +
+      '<div class="grades" style="grid-template-columns:1fr">' + (r ? '<button class="btn primary big" data-t="next">Дальше →</button>' : '<button class="btn primary big" data-t="check">Проверить</button>') + "</div>" +
+      '<div class="kbd">Tab — к следующему полю · Enter — проверить / дальше</div></div>';
+    $("#tr-form").addEventListener("submit", (e) => { e.preventDefault(); r ? trainerNext() : trainerCheck(); });
+    $("#tr-form").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); r ? trainerNext() : trainerCheck(); } });
+    if (!r && matchMedia("(hover: hover)").matches) $("#tr-Past").focus();
+    if (r) { const nb = $('[data-t="next"]'); nb.focus(); }
+  }
+  function trainerCheck() {
+    const T = vui.trainer, x = T.items[T.i];
+    const p = $("#tr-Past").value, pp = $("#tr-Participle").value;
+    const okForm = (val, forms) => forms.split(" / ").some((f) => clean(f) === clean(val));
+    const pOk = okForm(p, x.past), ppOk = okForm(pp, x.pp);
+    T.res = { p, pp, pOk, ppOk };
+    const P = prog(x.id), now = Date.now();
+    if (!P.seen) P.seen = now;
+    if (pOk && ppOk) { T.score++; P.box = Math.min(P.box + 1, 7); P.due = now + INTERVALS[P.box] * DAY; }
+    else { T.wrong.push(x); P.box = 0; P.due = now; }
+    P.st = P.box >= 5 ? 2 : 1;
+    logReview(); save(); speak(sayOf(x));
+    renderTrainer();
+  }
+  function trainerNext() { const T = vui.trainer; T.i++; T.res = null; renderTrainer(); }
+  function onTrainerClick(e) {
+    const say = e.target.closest("[data-say]"); if (say) { speak(say.dataset.say); return; }
+    const t = e.target.closest("[data-t]"); if (!t) return;
+    const a = t.dataset.t;
+    if (a === "exit") { vui.trainer = null; renderVerbs(); }
+    else if (a === "again") startTrainer();
+    else if (a === "check") trainerCheck();
+    else if (a === "next") trainerNext();
+  }
+
+  // ---------- ГРАММАТИКА ----------
+  const GR = window.GRAMMAR;
+  const gui = { open: null, answers: {} };
+  const LEVELS = { A2: "Основа (A2)", B1: "Средний уровень (B1)", B2: "Выше среднего (B2)" };
+  function renderGrammar() {
+    const v = $("#view-grammar");
+    if (gui.open) return renderTopic();
+    const done = GR.filter((t) => (S.g[t.id] || {}).done).length;
+    let h = '<h1>📐 Правила</h1><p class="muted" style="margin-top:-6px">Грамматика простыми словами: когда использовать, как строить, как звучит в фильмах и где ошибаются русскоязычные. Изучено ' + done + " из " + GR.length + ".</p>";
+    Object.keys(LEVELS).forEach((lv) => {
+      const ts = GR.filter((t) => t.level === lv); if (!ts.length) return;
+      h += '<h2>' + LEVELS[lv] + '</h2><div class="g-grid">';
+      ts.forEach((t) => {
+        const g = S.g[t.id] || {};
+        h += '<button class="g-tile' + (g.done ? " done" : "") + '" data-topic="' + t.id + '"><span class="ti">' + t.icon + '</span><span class="g-txt"><span class="tn">' + esc(t.title) + '</span><span class="tc">' + esc(t.short) + "</span></span>" +
+          '<span class="g-st">' + (g.done ? "✅" : "") + (g.best != null ? '<small>' + g.best + "/" + t.quiz.length + "</small>" : "") + "</span></button>";
+      });
+      h += "</div>";
+    });
+    v.innerHTML = h;
+  }
+  function renderTopic() {
+    const idx = GR.findIndex((t) => t.id === gui.open), t = GR[idx], g = S.g[t.id] || {};
+    if (!gui.order || gui.order.id !== t.id) gui.order = { id: t.id, q: t.quiz.map((q) => shuffle(q[1].map((o, i) => i))) };
+    const prev = GR[idx - 1], next = GR[idx + 1];
+    let quiz = '<h3>🧪 Проверь себя</h3><div class="g-quiz">';
+    t.quiz.forEach((q, qi) => {
+      const ans = gui.answers[qi];
+      quiz += '<div class="g-q"><div class="g-qt">' + (qi + 1) + ". " + esc(q[0]) + '</div><div class="g-opts">' +
+        gui.order.q[qi].map((oi) => '<button class="opt' + (ans != null ? (oi === q[2] ? " right" : oi === ans ? " wrong" : "") : "") + '" data-q="' + qi + '" data-a="' + oi + '"' + (ans != null ? " disabled" : "") + ">" + esc(q[1][oi]) + "</button>").join("") +
+        "</div>" + (ans != null ? '<div class="g-expl">' + (ans === q[2] ? "✅ " : "❌ ") + esc(q[3]) + "</div>" : "") + "</div>";
+    });
+    const answered = Object.keys(gui.answers).length, score = t.quiz.filter((q, i) => gui.answers[i] === q[2]).length;
+    quiz += "</div>" + (answered === t.quiz.length ? '<div class="g-score">Результат: <b>' + score + " / " + t.quiz.length + '</b> <button class="btn small-btn" data-g-retry="1">Ещё раз</button></div>' : "");
+    $("#view-grammar").innerHTML =
+      '<div class="g-top"><button class="btn" data-back="1">← Все правила</button><span class="badge">' + t.level + "</span></div>" +
+      '<article class="g-body"><h1>' + t.icon + " " + esc(t.title) + "</h1>" + t.body + quiz + "</article>" +
+      '<div class="g-foot"><button class="btn' + (g.done ? " on" : " primary") + '" data-done="1">' + (g.done ? "✅ Изучено" : "Отметить как изученное") + "</button></div>" +
+      '<div class="g-nav">' + (prev ? '<button class="btn" data-topic="' + prev.id + '">← ' + esc(prev.title) + "</button>" : "<span></span>") +
+      (next ? '<button class="btn" data-topic="' + next.id + '">' + esc(next.title) + " →</button>" : "") + "</div>";
+    // кнопки озвучки к примерам
+    $$("#view-grammar .exs li").forEach((li) => {
+      const b = li.querySelector("b"); if (!b) return;
+      const btn = document.createElement("button");
+      btn.className = "icon-btn"; btn.textContent = "🔊"; btn.dataset.say = b.textContent.replace(/—/g, " ");
+      li.prepend(btn);
+    });
+  }
+  function bindGrammar() {
+    $("#view-grammar").addEventListener("click", (e) => {
+      const say = e.target.closest("[data-say]"); if (say) { speak(say.dataset.say); return; }
+      const tp = e.target.closest("[data-topic]"); if (tp) { gui.open = tp.dataset.topic; gui.answers = {}; renderGrammar(); window.scrollTo({ top: 0 }); return; }
+      if (e.target.closest("[data-back]")) { gui.open = null; renderGrammar(); window.scrollTo({ top: 0 }); return; }
+      const t = GR.find((x) => x.id === gui.open);
+      if (e.target.closest("[data-done]")) { const g = S.g[t.id] || (S.g[t.id] = {}); g.done = !g.done; save(); renderTopic(); return; }
+      if (e.target.closest("[data-g-retry]")) { gui.answers = {}; gui.order = null; renderTopic(); return; }
+      const o = e.target.closest("[data-q]");
+      if (o && gui.answers[o.dataset.q] == null) {
+        const y = window.scrollY;
+        gui.answers[o.dataset.q] = +o.dataset.a;
+        if (Object.keys(gui.answers).length === t.quiz.length) {
+          const score = t.quiz.filter((q, i) => gui.answers[i] === q[2]).length;
+          const g = S.g[t.id] || (S.g[t.id] = {});
+          g.best = Math.max(g.best || 0, score);
+          if (score === t.quiz.length) g.done = true;
+          logReview(); save();
+        }
+        renderTopic(); window.scrollTo({ top: y });
+      }
+    });
+  }
+
   // ---------- STATS & SETTINGS ----------
+  // активность за последние 7 дней
+  function weekChart() {
+    const days = [], names = ["вс", "пн", "вт", "ср", "чт", "пт", "сб"];
+    for (let i = 6; i >= 0; i--) { const d = new Date(Date.now() - i * DAY); days.push([d.toISOString().slice(0, 10), names[d.getDay()]]); }
+    const max = Math.max(S.settings.goal, ...days.map(([k]) => S.days[k] || 0));
+    return '<div class="week">' + days.map(([k, n]) => { const v = S.days[k] || 0; return '<div class="wk' + (v >= S.settings.goal ? " hit" : "") + '" title="' + k + ": " + v + '"><i style="height:' + Math.max(4, (v / max) * 100) + '%"></i><span>' + n + "</span></div>"; }).join("") + "</div>";
+  }
   function streak() {
     let n = 0, d = new Date();
     if (!S.days[today()]) d = new Date(Date.now() - DAY);
@@ -569,6 +871,9 @@
     const learned = all.filter((p) => statusOf(p.id) === 2).length;
     const learning = all.filter((p) => statusOf(p.id) === 1).length;
     const wl = WD.filter((w) => statusOf(w.id) === 2).length;
+    const vl = VB.filter((v) => statusOf(v.id) === 2).length;
+    const gd = GR.filter((t) => (S.g[t.id] || {}).done).length;
+    const vdue = deckStats(VB).due;
     const due = deckStats(all).due, wdue = deckStats(WD).due;
     let bars = "";
     CATS.forEach((c) => {
@@ -580,6 +885,8 @@
       const items = WD.filter((w) => w.sec === k), l = items.filter((w) => statusOf(w.id) === 2).length;
       bars += '<div class="bar-row"><span>📖 ' + esc(SECS[k]) + '</span><div class="bar"><i class="l" style="width:' + (l / items.length) * 100 + '%"></i></div><span class="n">' + l + "/" + items.length + "</span></div>";
     });
+    const vItems = VB, vL = vItems.filter((x) => statusOf(x.id) === 2).length;
+    bars += '<div class="bar-row"><span>🔤 Неправильные глаголы</span><div class="bar"><i class="l" style="width:' + (vL / vItems.length) * 100 + '%"></i></div><span class="n">' + vL + "/" + vItems.length + "</span></div>";
     const voiceOpts = '<option value="">Авто</option>' + voices.map((v) => '<option value="' + esc(v.name) + '"' + (v.name === S.settings.voice ? " selected" : "") + ">" + esc(v.name) + " (" + v.lang + ")</option>").join("");
     const catOpts = window.CATEGORIES.filter((c) => c.id !== "custom").map((c) => '<option value="' + c.id + '">' + c.icon + " " + esc(c.name) + "</option>").join("");
 
@@ -588,9 +895,12 @@
       '<div class="card kpi"><b>' + learned + '</b><span>фраз выучено из ' + all.length + "</span></div>" +
       '<div class="card kpi"><b>' + learning + "</b><span>фраз в процессе</span></div>" +
       '<div class="card kpi"><b>' + wl + "</b><span>слов выучено из " + WD.length + "</span></div>" +
-      '<div class="card kpi"><b>' + streak() + " 🔥</b><span>дней подряд · сегодня " + (S.days[today()] || 0) + " повт.</span></div>" +
+      '<div class="card kpi"><b>' + streak() + " 🔥</b><span>дней подряд</span></div>" +
+      '<div class="card kpi"><b>' + vl + "</b><span>глаголов из " + VB.length + "</span></div>" +
+      '<div class="card kpi"><b>' + gd + "</b><span>правил изучено из " + GR.length + "</span></div>" +
+      '<div class="card kpi kpi-wide">' + goalBar() + weekChart() + "</div>" +
       "</div>" +
-      (due || wdue ? '<p class="row">' + (due ? '<button class="btn primary" id="go-review">Повторить фразы: ' + due + " →</button>" : "") + (wdue ? '<button class="btn" id="go-review-w">Повторить слова: ' + wdue + " →</button>" : "") + "</p>" : "") +
+      (due || wdue || vdue ? '<p class="row">' + (due ? '<button class="btn primary" id="go-review">Повторить фразы: ' + due + " →</button>" : "") + (wdue ? '<button class="btn" id="go-review-w">Повторить слова: ' + wdue + " →</button>" : "") + (vdue ? '<button class="btn" id="go-review-v">Повторить глаголы: ' + vdue + " →</button>" : "") + "</p>" : "") +
       '<h2>По категориям</h2><div class="card bars">' + bars + "</div>" +
 
       '<h2>✍️ Добавить свою фразу</h2>' +
@@ -609,12 +919,13 @@
       '<div class="set-row"><div class="lbl">Скрыть мат и 18+<small>Убирает фразы с пометкой «мат» и раздел «18+ Интим»</small></div><label class="switch"><input type="checkbox" id="set-vulgar"' + (S.settings.hideVulgar ? " checked" : "") + "><span></span></label></div>" +
       '<div class="set-row"><div class="lbl">Голос озвучки<small>Список зависит от устройства</small></div><select id="set-voice">' + voiceOpts + '</select><button class="btn" id="test-voice">▶︎</button></div>' +
       '<div class="set-row"><div class="lbl">Скорость речи<small id="rate-l">' + S.settings.rate.toFixed(2) + '×</small></div><input type="range" id="set-rate" min="0.5" max="1.3" step="0.05" value="' + S.settings.rate + '"></div>' +
+      '<div class="set-row"><div class="lbl">Цель дня<small>Сколько повторений (карточки, квизы, тренажёр) в день</small></div><select id="set-goal">' + [10, 20, 30, 50, 100].map((n) => "<option" + (n === S.settings.goal ? " selected" : "") + ">" + n + "</option>").join("") + "</select></div>" +
       '<div class="set-row"><div class="lbl">Новых карточек за сессию</div><select id="set-new">' + [10, 20, 30, 50].map((n) => "<option" + (n === S.settings.newPerSession ? " selected" : "") + ">" + n + "</option>").join("") + "</select></div>" +
       '<div class="set-row"><div class="lbl">Две колонки на широком экране</div><label class="switch"><input type="checkbox" id="set-cols"' + (S.settings.twoCols ? " checked" : "") + "><span></span></label></div>" +
       '<div class="set-row"><div class="lbl">Резервная копия<small>Прогресс и свои фразы — в файл. Так можно перенести с телефона на ПК и обратно</small></div><button class="btn" id="exp">⬇️ Экспорт</button><label class="btn">⬆️ Импорт<input type="file" id="imp" accept=".json,application/json" hidden></label></div>' +
       '<div class="set-row"><div class="lbl">Сбросить весь прогресс</div><button class="btn" id="reset" style="color:var(--bad)">Сбросить</button></div>' +
       "</div>" +
-      '<p class="small muted">Всего в базе: ' + PH.length + " фраз и " + WD.length + " слов. Данные хранятся только в этом браузере.</p>";
+      '<p class="small muted">Всего в базе: ' + PH.length + " фраз, " + WD.length + " слов, " + VB.length + " неправильных глаголов и " + GR.length + " правил. Данные хранятся только в этом браузере.</p>";
 
     const f = $("#add-form"); f.querySelector('[name="t"]').value = "m";
     f.addEventListener("submit", (e) => {
@@ -630,11 +941,13 @@
     $("#test-voice").addEventListener("click", () => speak("Hey, what's up? Long time no see!"));
     $("#set-rate").addEventListener("input", (e) => { S.settings.rate = +e.target.value; $("#rate-l").textContent = S.settings.rate.toFixed(2) + "×"; save(); });
     $("#set-new").addEventListener("change", (e) => { S.settings.newPerSession = +e.target.value; save(); });
+    $("#set-goal").addEventListener("change", (e) => { S.settings.goal = +e.target.value; save(); renderStats(); });
     $("#set-cols").addEventListener("change", (e) => { S.settings.twoCols = e.target.checked; save(); renderPhrases(); });
     $("#exp").addEventListener("click", exportData);
     $("#imp").addEventListener("change", importData);
     $("#reset").addEventListener("click", () => { if (confirm("Точно сбросить весь прогресс? Свои фразы останутся.")) { S.p = {}; S.days = {}; save(); renderAll(); toast("Прогресс сброшен"); } });
     const gr = $("#go-review"); if (gr) gr.addEventListener("click", () => { fc.src = "ph:all"; show("learn"); startSession(false); });
+    const grv = $("#go-review-v"); if (grv) grv.addEventListener("click", () => { fc.src = "v:all"; show("learn"); startSession(false); });
     const grw = $("#go-review-w"); if (grw) grw.addEventListener("click", () => { fc.src = "w:all"; show("learn"); startSession(false); });
   }
 
@@ -664,13 +977,16 @@
   let current = "phrases";
   function show(view) {
     current = view;
-    $$("#nav button").forEach((b) => b.classList.toggle("active", b.dataset.view === view));
+    const navView = view === "quiz" ? "learn" : view;
+    $$("#nav button").forEach((b) => b.classList.toggle("active", b.dataset.view === navView));
     $$(".view").forEach((v) => v.classList.toggle("active", v.id === "view-" + view));
     if (view === "learn" && !fc.running) renderLearnSetup();
     if (view === "quiz" && !qz.running) renderQuizSetup();
     if (view === "stats") renderStats();
     if (view === "phrases") renderPhrases();
     if (view === "words") renderWords();
+    if (view === "verbs") renderVerbs();
+    if (view === "grammar") renderGrammar();
     try { history.replaceState(null, "", "#" + view); } catch (e) { /* file:// */ }
     window.scrollTo({ top: 0 });
   }
@@ -680,12 +996,12 @@
   // ---------- keyboard (ПК) ----------
   document.addEventListener("keydown", (e) => {
     const typing = /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName);
-    if (e.key === "/" && !typing) { e.preventDefault(); const s = current === "words" ? $("#w-search") : (show("phrases"), $("#ph-search")); s.focus(); return; }
+    if (e.key === "/" && !typing) { e.preventDefault(); const s = current === "words" ? $("#w-search") : current === "verbs" && $("#vb-search") ? $("#vb-search") : (show("phrases"), $("#ph-search")); s.focus(); return; }
     if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
     if (current === "learn" && fc.running) {
       if (e.key === " " || e.key === "Enter") { e.preventDefault(); flip(); }
       else if (fc.flipped && ["1", "2", "3"].includes(e.key)) grade(+e.key - 1);
-      else if (e.key === "s" || e.key === "S" || e.key === "ы" || e.key === "Ы") { const c = fc.queue[fc.i]; if (c) speak(itemById(c.id).en); }
+      else if (e.key === "s" || e.key === "S" || e.key === "ы" || e.key === "Ы") { const c = fc.queue[fc.i]; if (c) speak(sayOf(itemById(c.id))); }
     }
     if (current === "quiz" && qz.running) {
       if (!qz.answered && ["1", "2", "3", "4"].includes(e.key)) answer(+e.key - 1);
@@ -693,12 +1009,12 @@
     }
   });
 
-  function renderAll() { renderPhrases(); renderWords(); if (current === "stats") renderStats(); if (current === "learn" && !fc.running) renderLearnSetup(); }
+  function renderAll() { renderPhrases(); renderWords(); if (current === "verbs") renderVerbs(); if (current === "grammar") renderGrammar(); if (current === "stats") renderStats(); if (current === "learn" && !fc.running) renderLearnSetup(); }
 
   // ---------- init ----------
-  bindPhrases(); bindWords(); bindLearn(); bindQuiz();
+  bindPhrases(); bindWords(); bindVerbs(); bindGrammar(); bindLearn(); bindQuiz();
   const start = (location.hash || "").slice(1);
-  show(["phrases", "words", "learn", "quiz", "stats"].includes(start) ? start : "phrases");
+  show(["phrases", "words", "verbs", "grammar", "learn", "quiz", "stats"].includes(start) ? start : "phrases");
 
   // Офлайн-режим (работает только на https / localhost, не при открытии файла напрямую)
   if ("serviceWorker" in navigator && /^https?:$/.test(location.protocol)) {

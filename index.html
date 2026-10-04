@@ -14,16 +14,17 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icons/icon-192.png">
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
-  <link rel="stylesheet" href="styles.css?v=5">
+  <link rel="stylesheet" href="styles.css?v=7">
 </head>
 <body>
 <div class="app">
   <nav class="nav" id="nav">
     <div class="brand">Talk Like a Native<small>разговорный английский</small></div>
     <button data-view="phrases" class="active"><span class="ic">💬</span>Фразы</button>
-    <button data-view="words"><span class="ic">📖</span>Словарь</button>
-    <button data-view="learn"><span class="ic">🃏</span>Карточки</button>
-    <button data-view="quiz"><span class="ic">🎯</span>Квиз</button>
+    <button data-view="words"><span class="ic">📖</span>Слова</button>
+    <button data-view="verbs"><span class="ic">🔤</span>Глаголы</button>
+    <button data-view="grammar"><span class="ic">📐</span>Правила</button>
+    <button data-view="learn"><span class="ic">🃏</span>Учить</button>
     <button data-view="stats"><span class="ic">📊</span>Прогресс</button>
   </nav>
 
@@ -68,6 +69,7 @@
         </select>
         <button class="btn small-btn" id="ph-reset">Сбросить</button>
       </div>
+      <div class="daily" id="ph-daily" hidden></div>
       <div class="count-line" id="ph-count"></div>
       <div class="list two" id="ph-list"></div>
       <button class="btn more" id="ph-more" hidden>Показать ещё</button>
@@ -90,6 +92,12 @@
       <button class="btn more" id="w-more" hidden>Показать ещё</button>
     </section>
 
+    <!-- ГЛАГОЛЫ -->
+    <section class="view" id="view-verbs"></section>
+
+    <!-- ПРАВИЛА -->
+    <section class="view" id="view-grammar"></section>
+
     <!-- КАРТОЧКИ -->
     <section class="view" id="view-learn"></section>
 
@@ -108,13 +116,16 @@
   </div>
 </div>
 
-<script src="data/categories.js?v=5"></script>
-<script src="data/phrases-1-basics.js?v=5"></script>
-<script src="data/phrases-2-grammar.js?v=5"></script>
-<script src="data/phrases-3-rude.js?v=5"></script>
-<script src="data/phrases-4-media.js?v=5"></script>
-<script src="data/phrases-5-life.js?v=5"></script>
-<script src="data/words.js?v=5"></script>
-<script src="app.js?v=5"></script>
+<script src="data/categories.js?v=7"></script>
+<script src="data/phrases-1-basics.js?v=7"></script>
+<script src="data/phrases-2-grammar.js?v=7"></script>
+<script src="data/phrases-3-rude.js?v=7"></script>
+<script src="data/phrases-4-media.js?v=7"></script>
+<script src="data/phrases-5-life.js?v=7"></script>
+<script src="data/words.js?v=7"></script>
+<script src="data/verbs.js?v=7"></script>
+<script src="data/grammar-1.js?v=7"></script>
+<script src="data/grammar-2.js?v=7"></script>
+<script src="app.js?v=7"></script>
 </body>
 </html>
