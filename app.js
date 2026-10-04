@@ -16,7 +16,24 @@
   let S;
   try { S = Object.assign(defaults(), JSON.parse(localStorage.getItem(KEY) || "{}")); } catch (e) { S = defaults(); }
   S.settings = Object.assign(defaults().settings, S.settings);
-  const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { /* storage unavailable */ } };
+  // Метки времени изменений — нужны, чтобы при синхронизации победила более свежая запись
+  let snap = {};
+  function snapshot(stampChanged) {
+    const now = Date.now(), next = {};
+    const check = (key, rec) => {
+      const { t, ...rest } = rec; const j = JSON.stringify(rest);
+      if (stampChanged && snap[key] !== j) rec.t = now;
+      next[key] = j;
+    };
+    for (const id in S.p) check("p:" + id, S.p[id]);
+    for (const id in S.g) check("g:" + id, S.g[id]);
+    const sj = JSON.stringify(S.settings);
+    if (stampChanged && snap.settings !== sj) S.settingsT = now;
+    next.settings = sj;
+    snap = next;
+  }
+  const writeLocal = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { /* storage unavailable */ } };
+  const save = () => { snapshot(true); writeLocal(); scheduleSync(); };
   const prog = (id) => S.p[id] || (S.p[id] = { box: 0, due: 0, seen: 0, fav: false, st: 0 });
   const peek = (id) => S.p[id] || null;
   // st: 0 new, 1 learning, 2 learned
@@ -25,6 +42,118 @@
     const d = today(); S.days[d] = (S.days[d] || 0) + 1;
     if (S.days[d] === S.settings.goal) setTimeout(() => toast("🎯 Дневная цель выполнена! " + S.settings.goal + " повторений"), 300);
   };
+
+  snapshot(false);
+
+  // ---------- синхронизация через приватный GitHub Gist ----------
+  const SYNC_KEY = KEY + ".sync", GIST_FILE = "talknative-progress.json";
+  let SY = {};
+  try { SY = JSON.parse(localStorage.getItem(SYNC_KEY) || "{}"); } catch (e) { SY = {}; }
+  const saveSY = () => { try { localStorage.setItem(SYNC_KEY, JSON.stringify(SY)); } catch (e) { /* ignore */ } };
+  let syncTimer = null, syncing = false, syncAgain = false, syncMsg = "";
+
+  function scheduleSync() {
+    if (!SY.token) return;
+    clearTimeout(syncTimer);
+    syncTimer = setTimeout(() => syncNow(), 4000);
+  }
+  async function gh(path, opts) {
+    const res = await fetch("https://api.github.com" + path, Object.assign({}, opts, {
+      headers: { Authorization: "Bearer " + SY.token, Accept: "application/vnd.github+json", "Content-Type": "application/json" },
+      cache: "no-store"
+    }));
+    if (res.status === 401) throw new Error("Ключ недействителен или отозван — подключи заново");
+    if (res.status === 403 || res.status === 404) throw new Error("Нет доступа: у ключа должна быть галочка «gist»");
+    if (!res.ok) throw new Error("GitHub ответил ошибкой " + res.status);
+    return res.json();
+  }
+  async function findOrCreateGist() {
+    const list = await gh("/gists?per_page=100");
+    const found = list.find((g) => g.files && g.files[GIST_FILE]);
+    if (found) return found.id;
+    const created = await gh("/gists", { method: "POST", body: JSON.stringify({ description: "Talk Like a Native — прогресс (синхронизация)", public: false, files: { [GIST_FILE]: { content: JSON.stringify(S) } } }) });
+    return created.id;
+  }
+  async function pullGist() {
+    const g = await gh("/gists/" + SY.gist);
+    const f = g.files && g.files[GIST_FILE];
+    if (!f) return null;
+    let text = f.content;
+    if (f.truncated && f.raw_url) text = await (await fetch(f.raw_url, { cache: "no-store" })).text();
+    try { return JSON.parse(text); } catch (e) { return null; }
+  }
+
+  // Слияние: по каждой записи побеждает более свежая; дни — максимум; свои фразы — объединение минус удалённые
+  function merge(a, b) {
+    const resetAt = Math.max(a.resetAt || 0, b.resetAt || 0);
+    const pick = (A, B, useReset) => {
+      const r = {};
+      new Set(Object.keys(A || {}).concat(Object.keys(B || {}))).forEach((id) => {
+        const x = (A || {})[id], y = (B || {})[id];
+        const w = !x ? y : !y ? x : (y.t || 0) > (x.t || 0) ? y : x;
+        if (!useReset || !resetAt || (w.t || 0) > resetAt) r[id] = w;
+      });
+      return r;
+    };
+    const del = Object.assign({}, b.del || {}, a.del || {});
+    const resetDay = resetAt ? new Date(resetAt).toISOString().slice(0, 10) : "";
+    const days = {};
+    new Set(Object.keys(a.days || {}).concat(Object.keys(b.days || {}))).forEach((d) => {
+      if (d >= resetDay) days[d] = Math.max((a.days || {})[d] || 0, (b.days || {})[d] || 0);
+    });
+    const custom = {};
+    (b.custom || []).concat(a.custom || []).forEach((c) => { if (!del[c.id]) custom[c.id] = c; });
+    const newerSettings = (b.settingsT || 0) > (a.settingsT || 0) ? b : a;
+    return Object.assign(defaults(), {
+      p: pick(a.p, b.p, true), g: pick(a.g, b.g, false), days, del, resetAt,
+      custom: Object.values(custom),
+      settings: Object.assign(defaults().settings, newerSettings.settings), settingsT: newerSettings.settingsT || 0
+    });
+  }
+
+  async function syncNow(manual) {
+    if (!SY.token) return;
+    if (syncing) { syncAgain = true; return; }
+    if (!navigator.onLine) { setSync("📴 Нет интернета — синхронизирую, когда появится"); return; }
+    syncing = true; clearTimeout(syncTimer); setSync("⏳ Синхронизация…");
+    try {
+      if (!SY.gist) { SY.gist = await findOrCreateGist(); saveSY(); }
+      const remote = await pullGist();
+      const before = JSON.stringify(S);
+      const merged = remote ? merge(S, remote) : S;
+      const mergedJson = JSON.stringify(merged);
+      if (!remote || mergedJson !== JSON.stringify(remote)) {
+        await gh("/gists/" + SY.gist, { method: "PATCH", body: JSON.stringify({ files: { [GIST_FILE]: { content: mergedJson } } }) });
+      }
+      if (mergedJson !== before) {
+        S = merged; writeLocal(); snapshot(false);
+        PH = buildPhrases(); phIndex = PH_BY_ID(); renderAll();
+      }
+      SY.last = Date.now(); SY.err = ""; saveSY();
+      setSync("✅ Синхронизировано в " + new Date(SY.last).toLocaleTimeString("ru", { hour: "2-digit", minute: "2-digit" }));
+      if (manual) toast("☁️ Синхронизировано");
+    } catch (err) {
+      SY.err = err.message; saveSY();
+      setSync("⚠️ " + err.message);
+      if (manual) toast("⚠️ " + err.message);
+    }
+    syncing = false;
+    if (syncAgain) { syncAgain = false; scheduleSync(); }
+  }
+  function setSync(msg) { syncMsg = msg; const el = document.getElementById("sync-status"); if (el) el.textContent = msg; }
+  async function connectSync(token) {
+    SY = { token: token.trim() }; saveSY();
+    setSync("⏳ Подключаюсь…");
+    await syncNow(true);
+    if (SY.err) { SY = {}; saveSY(); } else toast("☁️ Синхронизация включена");
+    renderStats();
+  }
+  document.addEventListener("visibilitychange", () => {
+    if (!SY.token) return;
+    if (document.visibilityState === "visible") syncNow();       // вернулся на вкладку — подтянуть изменения
+    else if (syncTimer) syncNow();                                // уходишь — отправить несохранённое
+  });
+  window.addEventListener("online", () => syncNow());
 
   // ---------- data ----------
   const CATS = window.CATEGORIES;
@@ -291,7 +420,7 @@
     }
     if (e.target.closest("[data-del]")) {
       if (!confirm("Удалить эту фразу?")) return;
-      S.custom = S.custom.filter((c) => c.id !== id); delete S.p[id]; save();
+      S.custom = S.custom.filter((c) => c.id !== id); delete S.p[id]; (S.del = S.del || {})[id] = Date.now(); save();
       PH = buildPhrases(); phIndex = PH_BY_ID(); renderPhrases(); return;
     }
     if (e.target.closest("[data-toggle]")) {
@@ -915,6 +1044,7 @@
       '<p class="small muted" style="margin:0">Свои фразы попадают в категорию «✍️ Мои фразы» и в карточки. Хранятся на этом устройстве — переноси через экспорт.</p>' +
       "</form>" +
 
+      '<h2>☁️ Синхронизация телефона и ПК</h2>' + syncCard() +
       '<h2>⚙️ Настройки</h2><div class="card settings">' +
       '<div class="set-row"><div class="lbl">Скрыть мат и 18+<small>Убирает фразы с пометкой «мат» и раздел «18+ Интим»</small></div><label class="switch"><input type="checkbox" id="set-vulgar"' + (S.settings.hideVulgar ? " checked" : "") + "><span></span></label></div>" +
       '<div class="set-row"><div class="lbl">Голос озвучки<small>Список зависит от устройства</small></div><select id="set-voice">' + voiceOpts + '</select><button class="btn" id="test-voice">▶︎</button></div>' +
@@ -927,6 +1057,7 @@
       "</div>" +
       '<p class="small muted">Всего в базе: ' + PH.length + " фраз, " + WD.length + " слов, " + VB.length + " неправильных глаголов и " + GR.length + " правил. Данные хранятся только в этом браузере.</p>";
 
+    bindSyncCard();
     const f = $("#add-form"); f.querySelector('[name="t"]').value = "m";
     f.addEventListener("submit", (e) => {
       e.preventDefault();
@@ -945,10 +1076,33 @@
     $("#set-cols").addEventListener("change", (e) => { S.settings.twoCols = e.target.checked; save(); renderPhrases(); });
     $("#exp").addEventListener("click", exportData);
     $("#imp").addEventListener("change", importData);
-    $("#reset").addEventListener("click", () => { if (confirm("Точно сбросить весь прогресс? Свои фразы останутся.")) { S.p = {}; S.days = {}; save(); renderAll(); toast("Прогресс сброшен"); } });
+    $("#reset").addEventListener("click", () => { if (confirm("Точно сбросить весь прогресс? Свои фразы останутся.")) { S.p = {}; S.days = {}; S.resetAt = Date.now(); save(); renderAll(); toast("Прогресс сброшен"); } });
     const gr = $("#go-review"); if (gr) gr.addEventListener("click", () => { fc.src = "ph:all"; show("learn"); startSession(false); });
     const grv = $("#go-review-v"); if (grv) grv.addEventListener("click", () => { fc.src = "v:all"; show("learn"); startSession(false); });
     const grw = $("#go-review-w"); if (grw) grw.addEventListener("click", () => { fc.src = "w:all"; show("learn"); startSession(false); });
+  }
+
+  function syncCard() {
+    if (SY.token) {
+      return '<div class="card form sync">' +
+        '<div class="row"><b>Подключено</b><span class="spacer"></span><span class="small muted" id="sync-status">' + esc(syncMsg || (SY.err ? "⚠️ " + SY.err : SY.last ? "✅ Последняя синхронизация: " + new Date(SY.last).toLocaleString("ru") : "")) + "</span></div>" +
+        '<p class="small muted" style="margin:0">Прогресс, избранное и свои фразы сохраняются в приватный Gist на твоём GitHub автоматически: через несколько секунд после занятий и при открытии сайта. На другом устройстве вставь тот же ключ.</p>' +
+        '<div class="row"><button class="btn primary" id="sync-now">🔄 Синхронизировать сейчас</button><button class="btn" id="sync-off">Отключить на этом устройстве</button></div></div>';
+    }
+    return '<div class="card form sync">' +
+      '<p style="margin:0">Прогресс будет храниться в <b>приватной заметке (Gist) на твоём GitHub</b> и автоматически совпадать на телефоне и ПК. Настройка один раз на каждом устройстве:</p>' +
+      '<ol class="sync-steps">' +
+      '<li>Открой <a href="https://github.com/settings/tokens/new?scopes=gist&description=Talk%20Native%20sync" target="_blank" rel="noopener">создание ключа на GitHub</a> (галочка <b>gist</b> уже стоит — больше ничего не отмечай).</li>' +
+      '<li>В поле <b>Expiration</b> выбери <b>No expiration</b> → нажми <b>Generate token</b> внизу.</li>' +
+      '<li>Скопируй ключ (начинается с <code>ghp_</code>) и вставь сюда:</li></ol>' +
+      '<div class="row"><input class="input" id="sync-token" type="password" autocomplete="off" placeholder="ghp_…" style="flex:1;min-width:200px"><button class="btn primary" id="sync-connect">Подключить</button></div>' +
+      '<p class="small muted" style="margin:0">На втором устройстве вставь <b>тот же ключ</b> (перешли его себе в «Избранное» мессенджера) или создай ещё один по той же ссылке. Ключ даёт доступ только к заметкам Gist — не к коду и не к аккаунту. <span id="sync-status">' + esc(syncMsg) + "</span></p></div>";
+  }
+  function bindSyncCard() {
+    const c = $("#sync-connect");
+    if (c) c.addEventListener("click", () => { const t = $("#sync-token").value; if (!/^(ghp_|github_pat_)\w{20,}/.test(t.trim())) { toast("Это не похоже на ключ GitHub (ghp_…)"); return; } connectSync(t); });
+    const n = $("#sync-now"); if (n) n.addEventListener("click", () => syncNow(true));
+    const o = $("#sync-off"); if (o) o.addEventListener("click", () => { if (confirm("Отключить синхронизацию на этом устройстве? Прогресс останется здесь и в Gist.")) { SY = {}; saveSY(); syncMsg = ""; renderStats(); } });
   }
 
   function exportData() {
@@ -967,7 +1121,7 @@
         if (!d || typeof d.p !== "object") throw new Error("bad");
         if (!confirm("Заменить текущий прогресс данными из файла?")) return;
         S = Object.assign(defaults(), d); S.settings = Object.assign(defaults().settings, d.settings);
-        save(); PH = buildPhrases(); phIndex = PH_BY_ID(); renderAll(); toast("Импорт выполнен ✅");
+        snap = {}; save(); PH = buildPhrases(); phIndex = PH_BY_ID(); renderAll(); toast("Импорт выполнен ✅");
       } catch (err) { toast("Не удалось прочитать файл"); }
     };
     r.readAsText(file);
@@ -1015,6 +1169,8 @@
   bindPhrases(); bindWords(); bindVerbs(); bindGrammar(); bindLearn(); bindQuiz();
   const start = (location.hash || "").slice(1);
   show(["phrases", "words", "verbs", "grammar", "learn", "quiz", "stats"].includes(start) ? start : "phrases");
+
+  if (SY.token) setTimeout(() => syncNow(), 600);
 
   // Офлайн-режим (работает только на https / localhost, не при открытии файла напрямую)
   if ("serviceWorker" in navigator && /^https?:$/.test(location.protocol)) {
