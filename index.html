@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Talk Like a Native</title>
+  <meta name="description" content="Разговорные фразы, сленг и мат на английском — с переводом, контекстом и примерами.">
+  <meta name="theme-color" content="#f6f5f2" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#131417" media="(prefers-color-scheme: dark)">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Talk Native">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="styles.css?v=5">
+</head>
+<body>
+<div class="app">
+  <nav class="nav" id="nav">
+    <div class="brand">Talk Like a Native<small>разговорный английский</small></div>
+    <button data-view="phrases" class="active"><span class="ic">💬</span>Фразы</button>
+    <button data-view="words"><span class="ic">📖</span>Словарь</button>
+    <button data-view="learn"><span class="ic">🃏</span>Карточки</button>
+    <button data-view="quiz"><span class="ic">🎯</span>Квиз</button>
+    <button data-view="stats"><span class="ic">📊</span>Прогресс</button>
+  </nav>
+
+  <main class="main">
+    <!-- ФРАЗЫ -->
+    <section class="view active" id="view-phrases">
+      <input class="search" id="ph-search" type="search" placeholder="Поиск по-английски или по-русски…  ( / )" autocomplete="off">
+      <div class="toolbar">
+        <button class="topic-btn" id="ph-topic"><span class="ic" id="ph-topic-ic">📚</span><span class="tl"><small>Тема</small><span id="ph-topic-l">Все темы</span></span><span class="caret">▾</span></button>
+        <button class="btn filt-btn" id="ph-filt-btn">Фильтры<span class="dot" id="ph-filt-n" hidden></span></button>
+      </div>
+      <div class="filters" id="ph-filters" hidden>
+        <select id="ph-type" aria-label="Тип">
+          <option value="">Любой тип</option>
+          <option value="d">Прямой перевод</option>
+          <option value="m">Запомнить целиком</option>
+        </select>
+        <select id="ph-reg" aria-label="Регистр">
+          <option value="">Любой регистр</option>
+          <option value="n">Нейтрально</option>
+          <option value="i">Разговорно</option>
+          <option value="r">Грубо</option>
+          <option value="v">Мат</option>
+        </select>
+        <select id="ph-freq" aria-label="Частота">
+          <option value="0">Любая частота</option>
+          <option value="5">★★★★★ только</option>
+          <option value="4">★★★★ и выше</option>
+          <option value="3">★★★ и выше</option>
+        </select>
+        <select id="ph-status" aria-label="Статус">
+          <option value="">Все</option>
+          <option value="new">Новые</option>
+          <option value="learning">Учу</option>
+          <option value="learned">Выучено</option>
+          <option value="fav">⭐ Избранное</option>
+        </select>
+        <select id="ph-sort" aria-label="Сортировка">
+          <option value="freq">По частоте</option>
+          <option value="cat">По категориям</option>
+          <option value="az">По алфавиту</option>
+        </select>
+        <button class="btn small-btn" id="ph-reset">Сбросить</button>
+      </div>
+      <div class="count-line" id="ph-count"></div>
+      <div class="list two" id="ph-list"></div>
+      <button class="btn more" id="ph-more" hidden>Показать ещё</button>
+    </section>
+
+    <!-- СЛОВАРЬ -->
+    <section class="view" id="view-words">
+      <input class="search" id="w-search" type="search" placeholder="Поиск по 1000 словам…" autocomplete="off">
+      <div class="toolbar">
+        <button class="topic-btn" id="w-topic"><span class="ic">📖</span><span class="tl"><small>Раздел</small><span id="w-topic-l">Все разделы</span></span><span class="caret">▾</span></button>
+        <select id="w-status" aria-label="Статус" class="filt-select">
+          <option value="">Все слова</option>
+          <option value="new">Не выучены</option>
+          <option value="learned">Выучены</option>
+          <option value="fav">⭐ Избранное</option>
+        </select>
+      </div>
+      <div class="count-line" id="w-count"></div>
+      <div class="card" id="w-list"></div>
+      <button class="btn more" id="w-more" hidden>Показать ещё</button>
+    </section>
+
+    <!-- КАРТОЧКИ -->
+    <section class="view" id="view-learn"></section>
+
+    <!-- КВИЗ -->
+    <section class="view" id="view-quiz"></section>
+
+    <!-- ПРОГРЕСС -->
+    <section class="view" id="view-stats"></section>
+  </main>
+</div>
+<div class="toast" id="toast"></div>
+<div class="sheet-bg" id="sheet" hidden>
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
+    <div class="sheet-head"><b id="sheet-title">Темы</b><button class="icon-btn" id="sheet-close" aria-label="Закрыть">✕</button></div>
+    <div class="topic-grid" id="sheet-grid"></div>
+  </div>
+</div>
+
+<script src="data/categories.js?v=5"></script>
+<script src="data/phrases-1-basics.js?v=5"></script>
+<script src="data/phrases-2-grammar.js?v=5"></script>
+<script src="data/phrases-3-rude.js?v=5"></script>
+<script src="data/phrases-4-media.js?v=5"></script>
+<script src="data/phrases-5-life.js?v=5"></script>
+<script src="data/words.js?v=5"></script>
+<script src="app.js?v=5"></script>
+</body>
+</html>
