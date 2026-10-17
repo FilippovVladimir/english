@@ -99,7 +99,7 @@ window.VERBS = [
   ["forbid", "forbade", "forbidden", "запрещать", 0, "Forbidden fruit.", "Запретный плод."],
   ["freeze", "froze", "frozen", "замерзать", 1, "Freeze! — He froze.", "Замри! — Он замер."],
   ["grind", "ground", "ground", "молоть", 0, "Freshly ground coffee.", "Свежемолотый кофе."],
-  ["hang", "hung", "hung", "вешать, висеть", 1, "He hung up on me.", "Он бросил трубку."],
+  ["hang", "hung", "hung", "вешать, висеть (но казнить — hanged)", 1, "He hung up on me.", "Он бросил трубку."],
   ["kneel", "knelt / kneeled", "knelt / kneeled", "становиться на колени", 0, "Kneel!", "На колени!"],
   ["learn", "learned / learnt", "learned / learnt", "учить, узнавать", 0, "Lesson learned.", "Урок усвоен."],
   ["leap", "leaped / leapt", "leaped / leapt", "прыгать", 0, "He leapt over the fence.", "Он перепрыгнул через забор."],
