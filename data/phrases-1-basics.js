@@ -154,7 +154,7 @@ P("agree", [
   { en: "I'm good", ru: "Мне не надо, спасибо / У меня всё норм", t: "m", f: 5, r: "i",
     n: "Важно! «I'm good» в ответ на предложение = вежливый ОТКАЗ.", ex: [["— Want a drink? — I'm good, thanks.", "— Выпьешь? — Не, спасибо, не надо."]] },
   { en: "That's not the point", ru: "Дело не в этом", t: "d", f: 4, r: "n", ex: [["That's not the point! You lied to me.", "Дело не в этом! Ты мне соврал."]] },
-  { en: "I beg to differ", ru: "Позволь не согласиться", t: "m", f: 2, r: "n", ex: [["I beg to differ, sir.", "Позвольте не согласиться, сэр."]] },
+  { en: "I beg to differ", ru: "Позволь не согласиться", t: "m", f: 2, r: "f", ex: [["I beg to differ, sir.", "Позвольте не согласиться, сэр."]] },
   { en: "Agree to disagree", ru: "Останемся каждый при своём", t: "m", f: 3, r: "n", ex: [["Let's just agree to disagree.", "Давай просто останемся каждый при своём мнении."]] }
 ]);
 

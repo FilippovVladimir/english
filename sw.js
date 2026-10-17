@@ -1,9 +1,9 @@
 // Офлайн-кэш. При изменении файлов увеличь VERSION — телефон подтянет новую версию.
-const VERSION = "v9";
+const VERSION = "v10";
 const FILES = [
   "./", "index.html", "styles.css", "app.js", "manifest.webmanifest",
   "data/categories.js", "data/phrases-1-basics.js", "data/phrases-2-grammar.js",
-  "data/phrases-3-rude.js", "data/phrases-4-media.js", "data/phrases-5-life.js", "data/words.js", "data/verbs.js", "data/grammar-1.js", "data/grammar-2.js",
+  "data/phrases-3-rude.js", "data/phrases-4-media.js", "data/phrases-5-life.js", "data/phrases-6-mylist.js", "data/patterns.js", "data/words.js", "data/verbs.js", "data/grammar-1.js", "data/grammar-2.js",
   "icons/icon-192.png", "icons/icon-512.png", "icons/apple-touch-icon.png"
 ];
 self.addEventListener("install", (e) => {

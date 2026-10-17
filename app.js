@@ -161,8 +161,10 @@
   CATS.push({ id: "custom", icon: "✍️", name: "Мои фразы" });
   CAT.custom = CATS[CATS.length - 1];
 
+  const PAT = window.PATTERNS || {}, MINE_X = new Set(window.MINE_EXTRA || []);
   function buildPhrases() {
-    const list = window.PHRASES.map((p) => Object.assign({ id: "p:" + p.cat + ":" + p.en.toLowerCase(), kind: "p" }, p));
+    const list = window.PHRASES.map((p) => Object.assign({ id: "p:" + p.cat + ":" + p.en.toLowerCase(), kind: "p" }, p,
+      { pat: p.pat || PAT[p.en], mine: p.mine || MINE_X.has(p.en) ? 1 : 0 }));
     S.custom.forEach((p) => list.push(Object.assign({ kind: "p", cat: "custom", ex: [], f: 3, r: "i", t: "m" }, p)));
     return list;
   }
@@ -213,19 +215,26 @@
 
   // ---------- rendering bits ----------
   const TYPE = { d: "Прямой перевод", m: "Запомнить" };
-  const REG = { n: "нейтрально", i: "разговорно", r: "грубо", v: "мат 🔞" };
+  const REG = { f: "формально", n: "нейтрально", i: "разговорно", r: "грубо", v: "мат 🔞" };
+  const FREQ = { 5: "очень часто — слышно постоянно", 4: "часто", 3: "встречается регулярно", 2: "редко", 1: "очень редко" };
+  // ссылки «послушать в живой речи»: нарезки из фильмов и ролики с YouTube
+  const clipText = (en) => String(en).split(" / ")[0].replace(/\(.*?\)|…|\.\.\.|[!?]|\s*\+.*$/g, " ").replace(/\s+/g, " ").trim();
+  const filmLinks = (en) => { const q = encodeURIComponent(clipText(en)); return '<div class="film-links"><a href="https://www.playphrase.me/#/search?q=' + q + '" target="_blank" rel="noopener">🎬 Послушать в фильмах</a><a href="https://youglish.com/pronounce/' + q + '/english" target="_blank" rel="noopener">▶️ На YouTube (YouGlish)</a></div>'; };
   const stars = (f) => '<span class="stars" title="Частота ' + f + '/5">' + "★".repeat(f) + '<span class="off">' + "★".repeat(5 - f) + "</span></span>";
 
   function phraseCard(p, open) {
     const st = statusOf(p.id), fav = peek(p.id) && peek(p.id).fav;
     const cls = ["card", "ph", st === 2 ? "learned" : st === 1 ? "learning" : "", open ? "open" : ""].join(" ");
-    let body = "";
+    let body = '<div class="usage"><span>📊 ' + FREQ[p.f] + '</span><span>🎭 ' + esc((window.REGISTER_INFO || {})[p.r] || REG[p.r]) + "</span>" + (p.reg ? "<span>🌍 " + (p.reg === "UK" ? "британское" : "американское") + "</span>" : "") + "</div>";
+    if (p.pat) body += '<div class="pat"><b>🧩 Как строить:</b> ' + esc(p.pat) + "</div>";
     if (p.n) body += '<p class="note">' + esc(p.n) + "</p>";
     if (p.lit) body += '<p class="lit">Дословно: «' + esc(p.lit) + "»</p>";
     (p.ex || []).forEach((e) => {
       body += '<div class="ex"><button class="icon-btn" data-say="' + esc(e[0]) + '" title="Озвучить">🔊</button><div><div class="ex-en">' + esc(e[0]) + '</div><div class="ex-ru">' + esc(e[1]) + "</div></div></div>";
     });
     if (p.alt && p.alt.length) body += '<div class="alt"><b>Похожие:</b> ' + p.alt.map(esc).join(", ") + "</div>";
+    if (p.src) body += '<div class="alt"><b>📺 Где услышал:</b> ' + esc(p.src) + "</div>";
+    body += filmLinks(p.en);
     body += '<div class="status-row">' +
       '<button class="btn' + (st === 1 ? " on" : "") + '" data-st="1">📘 Учу</button>' +
       '<button class="btn' + (st === 2 ? " on" : "") + '" data-st="2">✅ Знаю</button>' +
@@ -240,7 +249,7 @@
       '<span class="badge t-' + p.t + '">' + TYPE[p.t] + "</span>" +
       '<span class="badge r-' + p.r + '">' + REG[p.r] + "</span>" +
       (p.reg ? '<span class="badge">' + esc(p.reg) + "</span>" : "") +
-      (ui.cat === "" ? '<span class="badge">' + CAT[p.cat].icon + " " + esc(CAT[p.cat].name) + "</span>" : "") +
+      (!CAT[ui.cat] || ui.cat === "" ? '<span class="badge">' + CAT[p.cat].icon + " " + esc(CAT[p.cat].name) + "</span>" : "") +
       "</div></div>" +
       '<div class="ph-actions"><button class="icon-btn" data-say="' + esc(p.en) + '" title="Озвучить">🔊</button>' +
       '<button class="icon-btn ' + (fav ? "fav-on" : "") + '" data-fav="1" title="В избранное">' + (fav ? "★" : "☆") + "</button></div>" +
@@ -252,8 +261,10 @@
   const ui = { cat: "", q: "", type: "", reg: "", freq: 0, status: "", sort: "freq", limit: 60, open: new Set() };
   const PAGE = 60;
 
+  const SPECIAL = { mine: { icon: "📝", name: "Мой список" }, hard: { icon: "🔁", name: "Мои сложные" } };
+  const lapses = (id) => (peek(id) || {}).l || 0;
   function renderCats() {
-    const c = ui.cat && CAT[ui.cat];
+    const c = ui.cat && (CAT[ui.cat] || SPECIAL[ui.cat]);
     $("#ph-topic-ic").textContent = c ? c.icon : "📚";
     $("#ph-topic-l").textContent = c ? c.name : "Все темы";
     const n = (ui.type ? 1 : 0) + (ui.reg ? 1 : 0) + (ui.freq ? 1 : 0) + (ui.status ? 1 : 0) + (ui.sort !== "freq" ? 1 : 0);
@@ -275,6 +286,9 @@
     if (kind === "ph") {
       const vis = visiblePH();
       h += '<button class="tile wide' + (!ui.cat ? " active" : "") + '" data-pick=""><span class="ti">📚</span><span class="tn">Все темы</span><span class="spacer"></span><span class="tc">' + vis.length + " фраз</span></button>";
+      const mine = vis.filter((p) => p.mine), hard = vis.filter((p) => lapses(p.id) > 0);
+      h += '<div class="sheet-sec">Моё</div>' + tile("mine", "📝", "Мой список", mine, ui.cat === "mine") +
+        tile("hard", "🔁", "Мои сложные" + (hard.length ? "" : " (пока пусто)"), hard, ui.cat === "hard");
       window.CATEGORY_GROUPS.forEach((g) => {
         const ids = g.ids.filter((id) => CAT[id] && vis.some((p) => p.cat === id));
         if (!ids.length) return;
@@ -317,14 +331,15 @@
     const q = norm(ui.q.trim());
     const catOrder = Object.fromEntries(CATS.map((c, i) => [c.id, i]));
     let list = visiblePH().filter((p) =>
-      (!ui.cat || p.cat === ui.cat) &&
+      (!ui.cat || p.cat === ui.cat || (ui.cat === "mine" && p.mine) || (ui.cat === "hard" && lapses(p.id) > 0)) &&
       (!ui.type || p.t === ui.type) &&
       (!ui.reg || p.r === ui.reg) &&
       (p.f >= ui.freq) &&
       matchStatus(p.id, ui.status) &&
       (!q || norm(p.en + " " + p.ru + " " + (p.alt || []).join(" ") + " " + (p.n || "")).includes(q))
     );
-    if (ui.sort === "az") list.sort((a, b) => a.en.localeCompare(b.en));
+    if (ui.cat === "hard") list.sort((a, b) => lapses(b.id) - lapses(a.id));
+    else if (ui.sort === "az") list.sort((a, b) => a.en.localeCompare(b.en));
     else if (ui.sort === "cat") list.sort((a, b) => catOrder[a.cat] - catOrder[b.cat] || b.f - a.f);
     else list.sort((a, b) => b.f - a.f || catOrder[a.cat] - catOrder[b.cat]);
     if (q) {
@@ -437,6 +452,8 @@
   function refresh(id) { if (id.startsWith("w:")) renderWords(); else refreshCard(id); }
 
   // ---------- WORDS VIEW ----------
+  // глаголы показываем с to, как в словарях: to suggest
+  const wordEn = (w) => (w.sec === "verbs" && !/^(should|must|may)$/i.test(w.en) ? "to " + w.en.toLowerCase() : w.en);
   const wui = { sec: "", q: "", status: "", limit: 100 };
   function renderWords() {
     $("#w-topic-l").textContent = wui.sec ? SECS[wui.sec] : "Все разделы";
@@ -450,9 +467,10 @@
       const p = peek(w.id) || {};
       return '<div class="w-row' + (p.st === 2 ? " learned" : "") + '" data-id="' + w.id + '">' +
         '<span class="w-num">' + w.n + "</span>" +
-        '<div class="w-en">' + esc(w.en) + '<span class="w-ipa">' + esc(w.ipa) + "</span></div>" +
+        '<div class="w-en">' + esc(wordEn(w)) + '<span class="w-ipa">' + esc(w.ipa) + "</span></div>" +
         '<div class="w-ru">' + esc(w.ru) + "</div>" +
         '<div class="w-act"><button class="icon-btn" data-say="' + esc(w.en) + '" title="Озвучить">🔊</button>' +
+        '<a class="icon-btn" href="https://youglish.com/pronounce/' + encodeURIComponent(w.en.toLowerCase()) + '/english" target="_blank" rel="noopener" title="Послушать в живой речи (YouGlish)">🎬</a>' +
         '<button class="icon-btn ' + (p.fav ? "fav-on" : "") + '" data-fav="1" title="В избранное">' + (p.fav ? "★" : "☆") + "</button>" +
         '<button class="icon-btn" data-wl="1" title="Знаю / не знаю">' + (p.st === 2 ? "✅" : "⬜") + "</button></div></div>";
     }).join("") : '<div class="empty">Ничего не найдено</div>';
@@ -473,7 +491,8 @@
 
   // ---------- deck sources (shared by cards & quiz) ----------
   function deckOptions() {
-    let h = '<optgroup label="Фразы"><option value="ph:all">Все фразы</option><option value="ph:fav">⭐ Избранные (фразы и слова)</option><option value="ph:top">Самые частые (★★★★★)</option>';
+    let h = '<optgroup label="Моё"><option value="ph:mine">📝 Мой список</option><option value="ph:hard">🔁 Мои сложные (где ошибался)</option><option value="ph:fav">⭐ Избранное (фразы, слова, глаголы)</option></optgroup>' +
+      '<optgroup label="Фразы"><option value="ph:all">Все фразы</option><option value="ph:top">Самые частые (★★★★★)</option>';
     CATS.forEach((c) => { if (visiblePH().some((p) => p.cat === c.id)) h += '<option value="ph:' + c.id + '">' + c.icon + " " + esc(c.name) + "</option>"; });
     h += '</optgroup><optgroup label="Словарь (1000 слов)"><option value="w:all">Все слова</option>';
     Object.keys(SECS).forEach((k) => { if (!(S.settings.hideVulgar && k === "intimate")) h += '<option value="w:' + k + '">' + esc(SECS[k]) + "</option>"; });
@@ -483,6 +502,8 @@
   function deckItems(src) {
     const [kind, k] = src.split(":");
     if (k === "fav") return PH.concat(WD, VB).filter((x) => (peek(x.id) || {}).fav);
+    if (k === "hard") return visiblePH().concat(WD, VB).filter((x) => lapses(x.id) > 0).sort((a, b) => lapses(b.id) - lapses(a.id)).slice(0, 60);
+    if (k === "mine") return visiblePH().filter((p) => p.mine);
     if (kind === "v") return k === "top" ? VB.filter((v) => v.top) : VB;
     if (kind === "ph") {
       const v = visiblePH();
@@ -566,14 +587,16 @@
     }
     const c = fc.queue[fc.i], x = itemById(c.id);
     if (!x) { fc.i++; return renderCard(); }
-    const front = c.dir === "ru-en" ? x.ru : enOf(x);
-    const back = c.dir === "ru-en" ? enOf(x) : x.ru;
+    const shownEn = x.kind === "w" ? wordEn(x) : enOf(x);
+    const front = c.dir === "ru-en" ? x.ru : shownEn;
+    const back = c.dir === "ru-en" ? shownEn : x.ru;
     const typing = S.settings.typeAnswer && c.dir === "ru-en";
     let extra = "";
     if (fc.flipped && fc.typed) extra = '<div class="typed ' + (fc.typed.ok ? "ok" : "bad") + '">' + (fc.typed.ok ? (fc.typed.close ? "✅ Почти верно (опечатка): " : "✅ Верно: ") : "❌ Ты написал: ") + esc(fc.typed.val || "—") + "</div>";
     if (x.kind === "v") (x.ex || []).forEach((e) => { extra += '<div class="ex"><button class="icon-btn" data-say="' + esc(e[0]) + '">🔊</button><div><div class="ex-en">' + esc(e[0]) + '</div><div class="ex-ru">' + esc(e[1]) + "</div></div></div>"; });
     if (x.kind === "w" && x.ipa) extra += '<div class="hint">' + esc(x.ipa) + "</div>";
     if (x.kind === "p") {
+      if (x.pat) extra += '<div class="pat" style="margin-top:12px"><b>🧩</b> ' + esc(x.pat) + "</div>";
       if (x.n) extra += '<p class="note" style="margin-top:12px">' + esc(x.n) + "</p>";
       (x.ex || []).slice(0, 2).forEach((e) => { extra += '<div class="ex"><button class="icon-btn" data-say="' + esc(e[0]) + '">🔊</button><div><div class="ex-en">' + esc(e[0]) + '</div><div class="ex-ru">' + esc(e[1]) + "</div></div></div>"; });
     }
@@ -638,7 +661,7 @@
   function grade(g) {
     const c = fc.queue[fc.i], p = prog(c.id), now = Date.now();
     if (!p.seen) p.seen = now;
-    if (g === 0) { p.box = 0; p.due = now; fc.queue.splice(Math.min(fc.i + 4, fc.queue.length), 0, { id: c.id, dir: c.dir }); fc.total++; }
+    if (g === 0) { p.l = (p.l || 0) + 1; p.box = 0; p.due = now; fc.queue.splice(Math.min(fc.i + 4, fc.queue.length), 0, { id: c.id, dir: c.dir }); fc.total++; }
     else if (g === 1) { p.box = Math.max(1, p.box); p.due = now + DAY; }
     else { p.box = Math.min(p.box + 1, 7); p.due = now + INTERVALS[p.box] * DAY; }
     p.st = p.box >= 5 ? 2 : 1;
@@ -764,7 +787,7 @@
     $$(".opt").forEach((b, j) => { b.disabled = true; if (qz.opts[j].id === x.id) b.classList.add("right"); else if (j === i) b.classList.add("wrong"); });
     const p = prog(x.id);
     if (!p.seen) { p.seen = Date.now(); p.due = Date.now(); }
-    if (!ok) { p.box = 0; p.due = Date.now(); if (p.st === 2) p.st = 1; }
+    if (!ok) { p.l = (p.l || 0) + 1; p.box = 0; p.due = Date.now(); if (p.st === 2) p.st = 1; }
     if (!p.st) p.st = 1;
     logReview(); save();
     if (qz.mode !== "listen") speak(sayOf(x));
@@ -831,7 +854,7 @@
         return '<div class="vb-row' + (st === 2 ? " learned" : "") + (open ? " open" : "") + '" data-id="' + esc(x.id) + '">' +
           '<span class="vb-1">' + esc(x.en) + "</span><span>" + f(x.past) + "</span><span>" + f(x.pp) + '</span><span class="vb-ru">' + esc(x.ru) + "</span>" +
           '<span class="vb-act"><button class="icon-btn" data-say="' + esc(sayOf(x)) + '" title="Озвучить">🔊</button><button class="icon-btn" data-vl="1" title="Знаю">' + (st === 2 ? "✅" : "⬜") + "</button></span>" +
-          (open && x.ex.length ? '<div class="vb-ex"><button class="icon-btn" data-say="' + esc(x.ex[0][0]) + '">🔊</button><div><div class="ex-en">' + esc(x.ex[0][0]) + '</div><div class="ex-ru">' + esc(x.ex[0][1]) + '</div><div class="small muted">' + GRP[x.grp].name + "</div></div></div>" : "") +
+          (open && x.ex.length ? '<div class="vb-ex"><button class="icon-btn" data-say="' + esc(x.ex[0][0]) + '">🔊</button><div><div class="ex-en">' + esc(x.ex[0][0]) + '</div><div class="ex-ru">' + esc(x.ex[0][1]) + '</div><div class="small muted">' + GRP[x.grp].name + "</div>" + filmLinks(x.base) + "</div></div>" : "") +
           "</div>";
       }).join("") : '<div class="empty">Ничего не найдено</div>');
   }
@@ -892,7 +915,7 @@
     const P = prog(x.id), now = Date.now();
     if (!P.seen) P.seen = now;
     if (pOk && ppOk) { T.score++; P.box = Math.min(P.box + 1, 7); P.due = now + INTERVALS[P.box] * DAY; }
-    else { T.wrong.push(x); P.box = 0; P.due = now; }
+    else { T.wrong.push(x); P.l = (P.l || 0) + 1; P.box = 0; P.due = now; }
     P.st = P.box >= 5 ? 2 : 1;
     logReview(); save(); speak(sayOf(x));
     renderTrainer();
@@ -1035,10 +1058,11 @@
       '<h2>✍️ Добавить свою фразу</h2>' +
       '<form class="card form" id="add-form">' +
       '<div class="grid2"><input class="input" name="en" placeholder="Фраза на английском *" required><input class="input" name="ru" placeholder="Перевод *" required></div>' +
-      '<textarea name="n" placeholder="Пояснение / где услышал (необязательно)"></textarea>' +
+      '<input class="input" name="src" placeholder="📺 Где услышал (сериал, игра, серия) — необязательно">' +
+      '<textarea name="n" placeholder="Пояснение / как употребляется (необязательно)"></textarea>' +
       '<div class="grid2"><input class="input" name="exen" placeholder="Пример EN"><input class="input" name="exru" placeholder="Пример RU"></div>' +
       '<div class="row"><select name="t"><option value="m">Запомнить целиком</option><option value="d">Прямой перевод</option></select>' +
-      '<select name="r"><option value="i">Разговорно</option><option value="n">Нейтрально</option><option value="r">Грубо</option><option value="v">Мат</option></select>' +
+      '<select name="r"><option value="i">Разговорно</option><option value="n">Нейтрально</option><option value="f">Формально</option><option value="r">Грубо</option><option value="v">Мат</option></select>' +
       '<select name="f"><option value="3">★★★</option><option value="5">★★★★★</option><option value="4">★★★★</option><option value="2">★★</option><option value="1">★</option></select>' +
       '<span class="spacer"></span><button class="btn primary" type="submit">Добавить</button></div>' +
       '<p class="small muted" style="margin:0">Свои фразы попадают в категорию «✍️ Мои фразы» и в карточки. Хранятся на этом устройстве — переноси через экспорт.</p>' +
@@ -1062,7 +1086,7 @@
     f.addEventListener("submit", (e) => {
       e.preventDefault();
       const d = Object.fromEntries(new FormData(f));
-      const item = { id: "c:" + Date.now(), en: d.en.trim(), ru: d.ru.trim(), n: d.n.trim(), t: d.t, r: d.r, f: +d.f, ex: d.exen.trim() ? [[d.exen.trim(), d.exru.trim()]] : [] };
+      const item = { id: "c:" + Date.now(), en: d.en.trim(), ru: d.ru.trim(), n: d.n.trim(), src: d.src.trim(), t: d.t, r: d.r, f: +d.f, ex: d.exen.trim() ? [[d.exen.trim(), d.exru.trim()]] : [] };
       S.custom.push(item); save();
       PH = buildPhrases(); phIndex = PH_BY_ID();
       f.reset(); toast("Фраза добавлена в «Мои фразы»"); renderPhrases();
