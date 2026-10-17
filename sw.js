@@ -1,5 +1,5 @@
 // Офлайн-кэш. При изменении файлов увеличь VERSION — телефон подтянет новую версию.
-const VERSION = "v10";
+const VERSION = "v11";
 const FILES = [
   "./", "index.html", "styles.css", "app.js", "manifest.webmanifest",
   "data/categories.js", "data/phrases-1-basics.js", "data/phrases-2-grammar.js",

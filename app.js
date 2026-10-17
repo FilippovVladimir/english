@@ -428,7 +428,7 @@
     if (stb) {
       const p = prog(id), v = +stb.dataset.st;
       p.st = v;
-      if (v === 2) { p.box = Math.max(p.box, 5); p.due = Date.now() + 30 * DAY; p.seen = p.seen || Date.now(); }
+      if (v === 2) { p.box = Math.max(p.box, 5); p.due = dueIn(30); p.seen = p.seen || Date.now(); }
       if (v === 0) { p.box = 0; p.due = 0; p.seen = 0; }
       if (v === 1 && !p.seen) { p.seen = Date.now(); p.due = Date.now(); }
       save(); refresh(id); return;
@@ -445,7 +445,7 @@
     const wr = e.target.closest("[data-wl]");
     if (wr) {
       const p = prog(id); p.st = p.st === 2 ? 0 : 2;
-      if (p.st === 2) { p.box = Math.max(p.box, 5); p.due = Date.now() + 30 * DAY; p.seen = p.seen || Date.now(); } else { p.box = 0; p.due = 0; p.seen = 0; }
+      if (p.st === 2) { p.box = Math.max(p.box, 5); p.due = dueIn(30); p.seen = p.seen || Date.now(); } else { p.box = 0; p.due = 0; p.seen = 0; }
       save(); renderWords();
     }
   }
@@ -516,8 +516,33 @@
   }
 
   // ---------- FLASHCARDS (интервальное повторение) ----------
-  const INTERVALS = [0, 1, 2, 4, 8, 16, 35, 70]; // дни для коробок 0..7
-  const fc = { src: "ph:all", dir: "ru-en", queue: [], i: 0, flipped: false, done: 0, total: 0, running: false };
+  // ---------- алгоритм повторения ----------
+  // Уровень (box) 0..7 → через сколько дней показать снова. Уровень 4+ (2 недели) = «выучено».
+  const INTERVALS = [0, 1, 3, 7, 14, 30, 60, 120];
+  const LEARNED_BOX = 4;
+  // срок считается по дням (в 4 утра), а не по минутам: повторил вечером — завтра утром карточка уже ждёт
+  function dueIn(days) {
+    if (!days) return Date.now();
+    const d = new Date(); d.setHours(4, 0, 0, 0);
+    // небольшой разброс на длинных интервалах, чтобы карточки не приходили пачками в один день
+    const fuzz = days >= 7 ? Math.round(days * 0.1 * (Math.random() * 2 - 1)) : 0;
+    return d.getTime() + (days + fuzz) * DAY;
+  }
+  // Что будет с карточкой после ответа. g: 0 — не знаю, 1 — сложно, 2 — знаю
+  function nextBox(p, g, failedNow) {
+    const box = p ? p.box || 0 : 0, isNew = !p || !p.seen;
+    if (g === 0) return box >= 3 ? 1 : 0;              // забыл выученное — не с нуля, а с «завтра»
+    if (g === 1) return failedNow ? 1 : Math.max(1, box - 1);  // сложно — шаг назад
+    if (failedNow) return 1;                              // вспомнил после подсказки — проверим завтра
+    if (isNew) return 2;                                  // сразу знал — через 3 дня
+    return Math.min(box + 1, 7);
+  }
+  const fmtDays = (d) => !d ? "ещё раз" : d === 1 ? "завтра" : d < 7 ? d + " дн." : d < 30 ? Math.round(d / 7) + " нед." : Math.round(d / 30) + " мес.";
+  // новые карточки — лимит на день, а не на одну сессию
+  const newToday = () => (S.newDay && S.newDay.d === today() ? S.newDay.n : 0);
+  const newLeft = () => Math.max(0, S.settings.newPerSession - newToday());
+
+  const fc = { src: "ph:all", dir: "ru-en", queue: [], i: 0, flipped: false, done: 0, total: 0, running: false, fails: {}, cram: false, undo: null };
   try { const saved = JSON.parse(localStorage.getItem(KEY + ".fc") || "{}"); if (saved.src) fc.src = saved.src; if (saved.dir) fc.dir = saved.dir; } catch (e) { /* ignore */ }
 
   function deckStats(items) {
@@ -539,9 +564,14 @@
       '<button data-d="mix" class="' + (fc.dir === "mix" ? "on" : "") + '">Вперемешку</button></div></label>' +
       '<label class="inline-sw"><span>✍️ Вводить ответ с клавиатуры<small>Для карточек RU → EN: пишешь перевод сам, сайт проверяет</small></span><span class="switch"><input type="checkbox" id="fc-type"' + (S.settings.typeAnswer ? " checked" : "") + "><span></span></span></label>" +
       '<div class="stat-line muted"><div><b>' + st.due + "</b>на повторение</div><div><b>" + st.fresh + "</b>новых</div><div><b>" + st.learned + "</b>выучено</div><div><b>" + st.total + "</b>всего</div></div>" +
-      '<div class="row"><button class="btn primary big" id="fc-start">Начать (' + Math.min(st.due + Math.min(st.fresh, S.settings.newPerSession), st.total) + ")</button>" +
+      '<div class="row"><button class="btn primary big" id="fc-start">Начать (' + (Math.min(st.due, 150) + Math.min(st.fresh, newLeft())) + ")</button>" +
       '<button class="btn" id="fc-cram">Все подряд</button></div>' +
-      '<p class="small muted" style="margin:0">Новые карточки: до ' + S.settings.newPerSession + ' за раз. «Не знаю» — карточка вернётся в этой же сессии, «Сложно» — завтра, «Знаю» — через растущий интервал (1, 2, 4, 8, 16… дней).</p>' +
+      '<p class="small muted" style="margin:0">Новых сегодня: ' + newToday() + " из " + S.settings.newPerSession + (newLeft() ? "" : " — лимит на сегодня исчерпан, остались повторения") + '. <a href="#" id="fc-how">Как работают кнопки?</a></p>' +
+      '<div class="how" id="fc-how-box" hidden>' +
+      "<p><b>❌ Не знаю</b> — карточка вернётся через пару карточек в этой же сессии и будет возвращаться, пока не вспомнишь. Если забыл то, что уже знал, она не обнуляется полностью, а начинается с «завтра».</p>" +
+      "<p><b>🟠 Сложно</b> — вспомнил с трудом: интервал становится на шаг короче. Новую карточку ещё раз покажем в конце сессии.</p>" +
+      "<p><b>✅ Знаю</b> — интервал растёт: завтра → 3 дня → неделя → 2 недели → месяц → 2 → 4 месяца. Если знал новую карточку сразу — сразу 3 дня. Если вспомнил только после подсказки — проверим завтра.</p>" +
+      "<p>С 2 недель карточка считается выученной. Ошибки на уже знакомых карточках попадают в «🔁 Мои сложные». «Все подряд» — свободная тренировка: ответы «Знаю» там не сдвигают расписание, а ошибки учитываются.</p></div>" +
       "</div>";
     $("#fc-src").value = fc.src;
     $("#fc-src").addEventListener("change", (e) => { fc.src = e.target.value; persistFc(); renderLearnSetup(); });
@@ -549,6 +579,7 @@
     $("#fc-type").addEventListener("change", (e) => { S.settings.typeAnswer = e.target.checked; save(); });
     $("#fc-start").addEventListener("click", () => startSession(false));
     $("#fc-cram").addEventListener("click", () => startSession(true));
+    $("#fc-how").addEventListener("click", (e) => { e.preventDefault(); const b = $("#fc-how-box"); b.hidden = !b.hidden; });
   }
   function goalBar() {
     const n = S.days[today()] || 0, g = S.settings.goal, pct = Math.min(100, Math.round((n / g) * 100));
@@ -564,16 +595,26 @@
     let q;
     if (cram) q = shuffle(items).slice(0, 50);
     else {
-      const due = items.filter((x) => { const p = peek(x.id); return p && p.seen && p.due <= now; }).sort((a, b) => peek(a.id).due - peek(b.id).due);
-      const fresh = items.filter((x) => { const p = peek(x.id); return !p || !p.seen; });
-      // новые — сначала самые частые
-      fresh.sort((a, b) => (b.f || (b.top ? 5 : 3)) - (a.f || (a.top ? 5 : 3)) || Math.random() - 0.5);
-      q = due.concat(fresh.slice(0, S.settings.newPerSession));
-      q = shuffle(q.slice(0, 200));
+      // повторения: сначала самые просроченные, не больше 150 за раз
+      const due = items.filter((x) => { const p = peek(x.id); return p && p.seen && p.due <= now; })
+        .sort((a, b) => peek(a.id).due - peek(b.id).due).slice(0, 150);
+      // новые: сначала самые частые, в пределах дневного лимита
+      const fresh = items.filter((x) => { const p = peek(x.id); return !p || !p.seen; })
+        .sort((a, b) => (b.f || (b.top ? 5 : 3)) - (a.f || (a.top ? 5 : 3)) || Math.random() - 0.5)
+        .slice(0, newLeft());
+      // перемешиваем повторения и равномерно вставляем новые между ними
+      const rev = shuffle(due), step = fresh.length ? Math.max(1, Math.floor(rev.length / fresh.length)) : 0;
+      q = [];
+      while (rev.length || fresh.length) {
+        for (let k = 0; k < step && rev.length; k++) q.push(rev.shift());
+        if (fresh.length) q.push(fresh.shift());
+        if (!step) while (rev.length) q.push(rev.shift());
+      }
     }
-    if (!q.length) { toast("На сегодня всё повторено 🎉 Нажми «Все подряд», чтобы потренироваться ещё"); return; }
+    if (!q.length) { toast(newLeft() ? "На сегодня всё повторено 🎉 Нажми «Все подряд», чтобы потренироваться ещё" : "Повторения закончились, лимит новых на сегодня исчерпан 🎉 Завтра будут новые"); return; }
     fc.queue = q.map((x) => ({ id: x.id, dir: fc.dir === "mix" ? (Math.random() < 0.5 ? "ru-en" : "en-ru") : fc.dir }));
     fc.i = 0; fc.done = 0; fc.total = fc.queue.length; fc.flipped = false; fc.running = true;
+    fc.fails = {}; fc.cram = cram; fc.undo = null;
     renderCard();
   }
 
@@ -601,9 +642,11 @@
       (x.ex || []).slice(0, 2).forEach((e) => { extra += '<div class="ex"><button class="icon-btn" data-say="' + esc(e[0]) + '">🔊</button><div><div class="ex-en">' + esc(e[0]) + '</div><div class="ex-ru">' + esc(e[1]) + "</div></div></div>"; });
     }
     const pct = Math.round((fc.done / Math.max(fc.total, 1)) * 100);
-    const box = (peek(x.id) || {}).box || 0;
+    const P0 = peek(x.id), failedNow = !!fc.fails[x.id];
+    const lbl = (g) => g === 0 ? "ещё раз" : fc.cram && g === 2 ? "без изменений" : fmtDays(INTERVALS[nextBox(P0, g, failedNow)]);
     v.innerHTML = '<div class="fc-wrap">' +
-      '<div class="fc-top"><button class="icon-btn" id="fc-exit" title="Выйти">✕</button><div class="progress"><i style="width:' + pct + '%"></i></div><span class="small muted">' + fc.done + "/" + fc.total + "</span></div>" +
+      '<div class="fc-top"><button class="icon-btn" id="fc-exit" title="Выйти">✕</button>' +
+      (fc.undo ? '<button class="icon-btn" id="fc-undo" title="Отменить последний ответ (U)">↶</button>' : "") + '<div class="progress"><i style="width:' + pct + '%"></i></div><span class="small muted">' + fc.done + "/" + fc.total + "</span></div>" +
       '<div class="card fc" id="fc-card">' +
       '<div class="q">' + esc(front) + "</div>" +
       (c.dir === "en-ru" ? '<div class="row" style="margin-top:8px"><button class="icon-btn" data-say="' + esc(sayOf(x)) + '">🔊</button></div>' : "") +
@@ -614,10 +657,10 @@
         : '<div class="tap">Нажми, чтобы увидеть ответ</div>') +
       "</div>" +
       (fc.flipped
-        ? '<div class="grades"><button class="btn again" data-g="0">Не знаю<small>сейчас</small></button><button class="btn hard" data-g="1">Сложно<small>завтра</small></button><button class="btn good" data-g="2">Знаю<small>' + INTERVALS[Math.min(box + 1, 7)] + " дн.</small></button></div>"
+        ? '<div class="grades"><button class="btn again" data-g="0">Не знаю<small>' + lbl(0) + '</small></button><button class="btn hard" data-g="1">Сложно<small>' + lbl(1) + '</small></button><button class="btn good" data-g="2">Знаю<small>' + lbl(2) + "</small></button></div>"
         : typing ? '<div class="grades" style="grid-template-columns:2fr 1fr"><button class="btn primary big" id="fc-check">Проверить</button><button class="btn" id="fc-flip">Не знаю</button></div>'
         : '<div class="grades" style="grid-template-columns:1fr"><button class="btn primary big" id="fc-flip">Показать ответ</button></div>') +
-      '<div class="kbd">Пробел — перевернуть · 1 / 2 / 3 — оценка · S — озвучить</div>' +
+      '<div class="kbd">Пробел — перевернуть · 1 / 2 / 3 — оценка · S — озвучить · U — отменить</div>' +
       "</div>";
     if (fc.flipped && c.dir === "ru-en") speak(sayOf(x));
     if (!fc.flipped && c.dir === "en-ru") speak(sayOf(x));
@@ -659,14 +702,40 @@
 
   function flip() { if (!fc.flipped) { fc.flipped = true; fc.typed = null; renderCard(); } }
   function grade(g) {
-    const c = fc.queue[fc.i], p = prog(c.id), now = Date.now();
-    if (!p.seen) p.seen = now;
-    if (g === 0) { p.l = (p.l || 0) + 1; p.box = 0; p.due = now; fc.queue.splice(Math.min(fc.i + 4, fc.queue.length), 0, { id: c.id, dir: c.dir }); fc.total++; }
-    else if (g === 1) { p.box = Math.max(1, p.box); p.due = now + DAY; }
-    else { p.box = Math.min(p.box + 1, 7); p.due = now + INTERVALS[p.box] * DAY; }
-    p.st = p.box >= 5 ? 2 : 1;
+    const c = fc.queue[fc.i], id = c.id, before = S.p[id] ? JSON.parse(JSON.stringify(S.p[id])) : null;
+    // запоминаем состояние для кнопки «Отменить»
+    fc.undo = { id, before, i: fc.i, queue: fc.queue.slice(), done: fc.done, total: fc.total, fails: Object.assign({}, fc.fails),
+      day: S.days[today()] || 0, newDay: S.newDay ? Object.assign({}, S.newDay) : null };
+    const p = prog(id), wasNew = !p.seen, failedNow = !!fc.fails[id], wasKnown = (p.box || 0) >= 1;
+    if (wasNew) { p.seen = Date.now(); S.newDay = { d: today(), n: newToday() + 1 }; }
+    const notDueYet = p.due > Date.now();
+    if (fc.cram && g === 2 && !wasNew && notDueYet) {
+      // свободная тренировка: правильный ответ не сдвигает расписание
+    } else {
+      p.box = nextBox(before, g, failedNow);
+      p.due = dueIn(INTERVALS[p.box]);
+    }
+    if (g === 0) {
+      fc.fails[id] = (fc.fails[id] || 0) + 1;
+      // в «сложные» — только если забыл знакомое или не смог вспомнить дважды подряд
+      if ((wasKnown && !failedNow) || fc.fails[id] === 2) p.l = (p.l || 0) + 1;
+      fc.queue.splice(Math.min(fc.i + 3, fc.queue.length), 0, { id, dir: c.dir }); fc.total++;
+    } else if (g === 1 && (wasNew || (before && (before.box || 0) === 0)) && !fc.fails["h:" + id]) {
+      // новая и далась с трудом — ещё раз в конце сессии
+      fc.fails["h:" + id] = 1;
+      fc.queue.push({ id, dir: c.dir }); fc.total++;
+    }
+    p.st = p.box >= LEARNED_BOX ? 2 : 1;
     logReview(); save();
     fc.done++; fc.i++; fc.flipped = false; fc.typed = null; renderCard();
+  }
+  function undoGrade() {
+    const u = fc.undo; if (!u) return;
+    if (u.before) S.p[u.id] = u.before; else delete S.p[u.id];
+    S.days[today()] = u.day; S.newDay = u.newDay;
+    fc.queue = u.queue; fc.i = u.i; fc.done = u.done; fc.total = u.total; fc.fails = u.fails;
+    fc.undo = null; fc.flipped = true; fc.typed = null;
+    save(); renderCard(); toast("↶ Ответ отменён");
   }
 
   function bindLearn() {
@@ -675,6 +744,7 @@
       if (!fc.running) return;
       const say = e.target.closest("[data-say]"); if (say) { e.stopPropagation(); speak(say.dataset.say); return; }
       if (e.target.closest("#fc-exit")) { renderLearnSetup(); return; }
+      if (e.target.closest("#fc-undo")) { undoGrade(); return; }
       const g = e.target.closest("[data-g]"); if (g) { grade(+g.dataset.g); return; }
       if (e.target.closest("#fc-check")) { checkTyped(); return; }
       if (e.target.closest("#fc-form")) return;
@@ -787,8 +857,11 @@
     $$(".opt").forEach((b, j) => { b.disabled = true; if (qz.opts[j].id === x.id) b.classList.add("right"); else if (j === i) b.classList.add("wrong"); });
     const p = prog(x.id);
     if (!p.seen) { p.seen = Date.now(); p.due = Date.now(); }
-    if (!ok) { p.l = (p.l || 0) + 1; p.box = 0; p.due = Date.now(); if (p.st === 2) p.st = 1; }
-    if (!p.st) p.st = 1;
+    if (!ok) {
+      if ((p.box || 0) >= 1) p.l = (p.l || 0) + 1;
+      p.box = Math.min(p.box || 0, 1); p.due = dueIn(INTERVALS[p.box]);
+    }
+    p.st = p.box >= LEARNED_BOX ? 2 : 1;
     logReview(); save();
     if (qz.mode !== "listen") speak(sayOf(x));
     let expl = '<b>' + esc(enOf(x)) + "</b> — " + esc(x.ru);
@@ -866,7 +939,7 @@
       const id = row.dataset.id;
       if (e.target.closest("[data-vl]")) {
         const p = prog(id); p.st = p.st === 2 ? 0 : 2;
-        if (p.st === 2) { p.box = Math.max(p.box, 5); p.due = Date.now() + 30 * DAY; p.seen = p.seen || Date.now(); } else { p.box = 0; p.due = 0; p.seen = 0; }
+        if (p.st === 2) { p.box = Math.max(p.box, 5); p.due = dueIn(30); p.seen = p.seen || Date.now(); } else { p.box = 0; p.due = 0; p.seen = 0; }
         save(); renderVerbRows(); return;
       }
       if (vui.hide && !vui.shown.has(id)) { vui.shown.add(id); speak(sayOf(vbIndex[id])); }
@@ -913,10 +986,12 @@
     const pOk = okForm(p, x.past), ppOk = okForm(pp, x.pp);
     T.res = { p, pp, pOk, ppOk };
     const P = prog(x.id), now = Date.now();
-    if (!P.seen) P.seen = now;
-    if (pOk && ppOk) { T.score++; P.box = Math.min(P.box + 1, 7); P.due = now + INTERVALS[P.box] * DAY; }
-    else { T.wrong.push(x); P.l = (P.l || 0) + 1; P.box = 0; P.due = now; }
-    P.st = P.box >= 5 ? 2 : 1;
+    const prevP = JSON.parse(JSON.stringify(P));   // до отметки seen — чтобы новый глагол считался новым
+    if (!P.seen) { P.seen = now; S.newDay = { d: today(), n: newToday() + 1 }; }
+    if (pOk && ppOk) { T.score++; P.box = nextBox(prevP, 2, false); }
+    else { T.wrong.push(x); if ((P.box || 0) >= 1) P.l = (P.l || 0) + 1; P.box = nextBox(prevP, 0, false); }
+    P.due = dueIn(INTERVALS[P.box]);
+    P.st = P.box >= LEARNED_BOX ? 2 : 1;
     logReview(); save(); speak(sayOf(x));
     renderTrainer();
   }
@@ -1074,7 +1149,7 @@
       '<div class="set-row"><div class="lbl">Голос озвучки<small>Список зависит от устройства</small></div><select id="set-voice">' + voiceOpts + '</select><button class="btn" id="test-voice">▶︎</button></div>' +
       '<div class="set-row"><div class="lbl">Скорость речи<small id="rate-l">' + S.settings.rate.toFixed(2) + '×</small></div><input type="range" id="set-rate" min="0.5" max="1.3" step="0.05" value="' + S.settings.rate + '"></div>' +
       '<div class="set-row"><div class="lbl">Цель дня<small>Сколько повторений (карточки, квизы, тренажёр) в день</small></div><select id="set-goal">' + [10, 20, 30, 50, 100].map((n) => "<option" + (n === S.settings.goal ? " selected" : "") + ">" + n + "</option>").join("") + "</select></div>" +
-      '<div class="set-row"><div class="lbl">Новых карточек за сессию</div><select id="set-new">' + [10, 20, 30, 50].map((n) => "<option" + (n === S.settings.newPerSession ? " selected" : "") + ">" + n + "</option>").join("") + "</select></div>" +
+      '<div class="set-row"><div class="lbl">Новых карточек в день<small>Сколько новых фраз и слов добавлять в изучение за день. Повторения не ограничены</small></div><select id="set-new">' + [10, 20, 30, 50].map((n) => "<option" + (n === S.settings.newPerSession ? " selected" : "") + ">" + n + "</option>").join("") + "</select></div>" +
       '<div class="set-row"><div class="lbl">Две колонки на широком экране</div><label class="switch"><input type="checkbox" id="set-cols"' + (S.settings.twoCols ? " checked" : "") + "><span></span></label></div>" +
       '<div class="set-row"><div class="lbl">Резервная копия<small>Прогресс и свои фразы — в файл. Так можно перенести с телефона на ПК и обратно</small></div><button class="btn" id="exp">⬇️ Экспорт</button><label class="btn">⬆️ Импорт<input type="file" id="imp" accept=".json,application/json" hidden></label></div>' +
       '<div class="set-row"><div class="lbl">Сбросить весь прогресс</div><button class="btn" id="reset" style="color:var(--bad)">Сбросить</button></div>' +
@@ -1179,6 +1254,7 @@
     if (current === "learn" && fc.running) {
       if (e.key === " " || e.key === "Enter") { e.preventDefault(); flip(); }
       else if (fc.flipped && ["1", "2", "3"].includes(e.key)) grade(+e.key - 1);
+      else if (e.key === "u" || e.key === "U" || e.key === "г" || e.key === "Г") undoGrade();
       else if (e.key === "s" || e.key === "S" || e.key === "ы" || e.key === "Ы") { const c = fc.queue[fc.i]; if (c) speak(sayOf(itemById(c.id))); }
     }
     if (current === "quiz" && qz.running) {

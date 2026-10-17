@@ -521,3 +521,6 @@ textarea { width: 100%; min-height: 60px; resize: vertical; }
 .film-links a:hover { border-color: var(--accent); color: var(--accent); }
 a.icon-btn { text-decoration: none; color: inherit; }
 .fc .pat { text-align: left; }
+.how { font-size: 13.5px; background: var(--surface-2); border-radius: 10px; padding: 4px 12px; }
+.how[hidden] { display: none; }
+.how p { margin: 8px 0; }
